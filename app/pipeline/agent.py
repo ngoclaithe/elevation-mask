@@ -46,9 +46,13 @@ def _filter_detections(regions: list[Region], perceived: PerceiveResult) -> list
             continue
         x1, y1, x2, y2 = region.box
         area = max(1, (x2 - x1) * (y2 - y1))
+        if region.label in {"window", "vent"} and area > 0.08 * env_area:
+            continue
         if region.label.startswith("wall") and area > 0.35 * env_area:
             continue
-        if region.label == "roof" and area > 0.55 * env_area:
+        if region.label == "roof" and area > 0.50 * env_area:
+            continue
+        if (x2 - x1) > 0.85 * perceived.envelope.shape[1] and region.label != "roof":
             continue
         mask = region.mask
         if perceived.envelope is not None:
@@ -96,7 +100,7 @@ def run_agent(bgr: np.ndarray, max_iters: int | None = None) -> dict:
         if not last_issues:
             break
         masks = apply_fixes(perceived, masks, last_issues)
-        masks = snap_regions(perceived, _as_regions(masks) + detections)
+        masks = snap_regions(perceived, _as_regions(masks))
 
     masks = solidify_masks(masks, perceived.envelope)
     mask_layer = render_mask_layer(masks)

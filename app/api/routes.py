@@ -99,7 +99,7 @@ def list_classes() -> dict:
 @router.post("/v1/segment", status_code=202)
 async def segment(
     image: Annotated[UploadFile, File()],
-    max_iters: Annotated[int, Form()] = 6,
+    max_iters: Annotated[int, Form()] = 3,
     enable_florence: Annotated[bool | None, Form()] = None,
     enable_yolo_world: Annotated[bool | None, Form()] = None,
     enable_sam: Annotated[bool | None, Form()] = None,

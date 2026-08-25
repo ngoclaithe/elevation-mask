@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     enable_sam: bool = False
     enable_vl_critic: bool = False
     max_iters: int = 3
-    overlay_alpha: float = 0.55
+    overlay_alpha: float = 0.62
     florence_max_side: int = 768
 
     florence_id: str = "microsoft/Florence-2-base"

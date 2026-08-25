@@ -36,19 +36,27 @@ def _ensure_ink_black(gray: np.ndarray) -> np.ndarray:
 
 def _envelope(paper: np.ndarray) -> np.ndarray:
     h, w = paper.shape
-    flood = paper.copy()
+    ink = np.where(paper == 0, 255, 0).astype(np.uint8)
+    ink = cv2.dilate(ink, cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7)))
+    sealed = np.where(ink > 0, 0, 255).astype(np.uint8)
+    flood = sealed.copy()
     ff_mask = np.zeros((h + 2, w + 2), np.uint8)
     for x, y in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)):
         if flood[y, x] == 255:
             cv2.floodFill(flood, ff_mask, (x, y), 128)
     env = np.where(flood != 128, 255, 0).astype(np.uint8)
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-    env = cv2.morphologyEx(env, cv2.MORPH_CLOSE, kernel)
+    env = cv2.erode(env, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)))
     n, labels, stats, _ = cv2.connectedComponentsWithStats((env > 0).astype(np.uint8))
     if n <= 2:
         return env
     keep = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
-    return np.where(labels == keep, 255, 0).astype(np.uint8)
+    largest = stats[keep, cv2.CC_STAT_AREA]
+    out = np.zeros_like(env)
+    for i in range(1, n):
+        if stats[i, cv2.CC_STAT_AREA] >= 0.25 * largest:
+            out[labels == i] = 255
+    out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9)))
+    return out
 
 
 def _ink_density_by_row(ink: np.ndarray, envelope: np.ndarray) -> np.ndarray:

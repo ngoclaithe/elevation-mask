@@ -1,0 +1,18 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      ENABLE_FLORENCE: "true"
+      ENABLE_SAM: "true"
+      ENABLE_VL_CRITIC: "false"
+      DEVICE: cpu
+    volumes:
+      - job-data:/app/data
+      - hf-cache:/root/.cache
+    restart: unless-stopped
+
+volumes:
+  job-data:
+  hf-cache:

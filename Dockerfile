@@ -1,13 +1,14 @@
 FROM python:3.11-slim-bookworm
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libglib2.0-0 libgl1 \
+    && apt-get install -y --no-install-recommends libglib2.0-0 libgl1 git \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch torchvision
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir git+https://github.com/ultralytics/CLIP.git
 
 COPY app ./app
 COPY samples ./samples

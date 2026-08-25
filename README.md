@@ -23,8 +23,8 @@ GET  /health
 ```
 
 ```bash
-curl -F image=@samples/image_1.jpg http://127.0.0.1:8080/v1/segment
-curl http://127.0.0.1:8080/v1/jobs/<job_id>
+curl -F image=@samples/image_1.jpg http://127.0.0.1:8787/v1/segment
+curl http://127.0.0.1:8787/v1/jobs/<job_id>
 ```
 
 Form fields: `max_iters`, `enable_florence`, `enable_sam`, `enable_vl_critic`, `scale_mm_per_px`.
@@ -36,6 +36,8 @@ Default: Florence + SAM on, VL critic **off** (CPU 7B/3B is minutes per loop). G
 ```bash
 docker compose up --build
 ```
+
+Host port **8787** (8080 inside the container) so it does not collide with other services.
 
 Without Docker (CPU torch):
 

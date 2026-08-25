@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 import numpy as np
 
@@ -8,7 +9,7 @@ from app.pipeline.area import compute_areas
 from app.pipeline.critic import Issue, critique
 from app.pipeline.fixer import apply_fixes
 from app.pipeline.florence import propose_boxes
-from app.pipeline.geometry import Region, perceive
+from app.pipeline.geometry import PerceiveResult, Region, perceive
 from app.pipeline.render import render_overlay
 from app.pipeline.sam_seg import refine_regions
 from app.pipeline.snap import snap_regions
@@ -37,11 +38,41 @@ def _as_regions(masks: dict[str, np.ndarray]) -> list[Region]:
     ]
 
 
+def _filter_florence(regions: list[Region], perceived: PerceiveResult) -> list[Region]:
+    env_area = max(int(np.count_nonzero(perceived.envelope)), 1)
+    kept: list[Region] = []
+    for region in regions:
+        if region.box is None:
+            continue
+        x1, y1, x2, y2 = region.box
+        cy = 0.5 * (y1 + y2)
+        if region.label == "roof":
+            mask = region.mask.copy()
+            mask[perceived.eave_y :, :] = 0
+            if int(np.count_nonzero(mask)) < 40:
+                continue
+            kept.append(
+                Region(label="roof", mask=mask, score=region.score, source=region.source, box=region.box)
+            )
+            continue
+        if region.label in {"window", "vent"}:
+            if cy < perceived.eave_y or cy > perceived.foundation_y:
+                continue
+        if region.label.startswith("wall") and (x2 - x1) * (y2 - y1) > 0.3 * env_area:
+            continue
+        kept.append(region)
+    return kept
+
+
 def run_agent(bgr: np.ndarray, max_iters: int | None = None) -> dict:
     iters = max_iters if max_iters is not None else settings.max_iters
+    t0 = time.perf_counter()
     perceived = perceive(bgr)
-    florence = propose_boxes(perceived.bgr)
+    t_perceive = time.perf_counter()
+    florence = _filter_florence(propose_boxes(perceived.bgr), perceived)
+    t_florence = time.perf_counter()
     merged = refine_regions(perceived.bgr, list(perceived.regions) + florence)
+    t_sam = time.perf_counter()
     masks = snap_regions(perceived, merged)
 
     overlay = render_overlay(perceived.bgr, masks)
@@ -62,8 +93,17 @@ def run_agent(bgr: np.ndarray, max_iters: int | None = None) -> dict:
         if not last_issues:
             break
         masks = apply_fixes(perceived, masks, last_issues)
-        masks = snap_regions(perceived, _as_regions(masks) + florence)
+        masks = snap_regions(perceived, _as_regions(masks))
 
+    t_end = time.perf_counter()
+    timing = {
+        "perceive_ms": round((t_perceive - t0) * 1000),
+        "florence_ms": round((t_florence - t_perceive) * 1000),
+        "sam_ms": round((t_sam - t_florence) * 1000),
+        "rest_ms": round((t_end - t_sam) * 1000),
+        "total_ms": round((t_end - t0) * 1000),
+    }
+    log.info("agent timing %s", timing)
     return {
         "masks": masks,
         "overlay": overlay,
@@ -77,5 +117,6 @@ def run_agent(bgr: np.ndarray, max_iters: int | None = None) -> dict:
             "florence_boxes": len(florence),
             "iters": len(trace),
             "open_issues": [i.__dict__ for i in last_issues],
+            "timing": timing,
         },
     }

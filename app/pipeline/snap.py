@@ -51,7 +51,7 @@ def snap_regions(perceived: PerceiveResult, regions: list[Region]) -> dict[str, 
         if region.label not in stacked:
             continue
         snapped = region.mask
-        if region.source in {"florence", "sam"}:
+        if region.source in {"florence", "sam"} and region.label in {"window", "vent"}:
             snapped = _fill_to_ink(region.mask, perceived.envelope, perceived.ink)
         else:
             snapped = _clip(region.mask, perceived.envelope)
@@ -69,4 +69,20 @@ def snap_regions(perceived: PerceiveResult, regions: list[Region]) -> dict[str, 
             claimed = cv2.bitwise_or(claimed, mask)
         else:
             claimed = cv2.bitwise_or(claimed, mask)
+    leftover = cv2.bitwise_and(perceived.envelope, cv2.bitwise_not(claimed))
+    if int(np.count_nonzero(leftover)):
+        roof_fill = leftover.copy()
+        roof_fill[perceived.eave_y :, :] = 0
+        l2_fill = leftover.copy()
+        l2_fill[: perceived.eave_y, :] = 0
+        l2_fill[perceived.floor_y :, :] = 0
+        l1_fill = leftover.copy()
+        l1_fill[: perceived.floor_y, :] = 0
+        l1_fill[perceived.foundation_y :, :] = 0
+        found_fill = leftover.copy()
+        found_fill[: perceived.foundation_y, :] = 0
+        out["roof"] = cv2.bitwise_or(out["roof"], roof_fill)
+        out["wall_l2"] = cv2.bitwise_or(out["wall_l2"], l2_fill)
+        out["wall_l1"] = cv2.bitwise_or(out["wall_l1"], l1_fill)
+        out["foundation"] = cv2.bitwise_or(out["foundation"], found_fill)
     return out

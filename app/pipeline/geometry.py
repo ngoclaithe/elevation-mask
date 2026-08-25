@@ -44,7 +44,23 @@ def _envelope(paper: np.ndarray) -> np.ndarray:
     env = np.where(flood != 128, 255, 0).astype(np.uint8)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
     env = cv2.morphologyEx(env, cv2.MORPH_CLOSE, kernel)
-    return env
+    n, labels, stats, _ = cv2.connectedComponentsWithStats((env > 0).astype(np.uint8))
+    if n <= 2:
+        return env
+    keep = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    return np.where(labels == keep, 255, 0).astype(np.uint8)
+
+
+def _ink_density_by_row(ink: np.ndarray, envelope: np.ndarray) -> np.ndarray:
+    h = ink.shape[0]
+    dens = np.zeros(h, np.float32)
+    for y in range(h):
+        n = int(np.count_nonzero(envelope[y]))
+        if n < 12:
+            continue
+        dens[y] = float(np.count_nonzero((ink[y] > 0) & (envelope[y] > 0))) / n
+    kernel = np.ones(9, np.float32) / 9.0
+    return np.convolve(dens, kernel, mode="same")
 
 
 def _band_ink_rows(ink: np.ndarray, envelope: np.ndarray, y0: int, y1: int) -> np.ndarray:
@@ -72,15 +88,25 @@ def _horizontal_line_peaks(ink: np.ndarray, envelope: np.ndarray) -> tuple[int, 
         return h // 4, h // 2, int(h * 0.92)
     top, bot = int(ys.min()), int(ys.max())
     height = max(bot - top, 1)
-    widths = np.array([_row_width(envelope, y) for y in range(envelope.shape[0])])
-    max_w = max(int(widths.max()), 1)
-
-    # Eave = first row from the ridge where the silhouette is already "wall-wide".
-    eave_y = top
-    for y in range(top, bot):
-        if widths[y] >= 0.55 * max_w:
-            eave_y = y
+    dens = _ink_density_by_row(ink, envelope)
+    mid = top + int(height * 0.52)
+    thresh = max(0.14, float(np.median(dens[top:bot]) + 0.04))
+    eave_y = top + int(height * 0.18)
+    in_band = False
+    band_end = None
+    for y in range(top, mid):
+        if dens[y] >= thresh:
+            in_band = True
+            band_end = y
+        elif in_band and dens[y] < thresh * 0.72:
             break
+    if band_end is not None and (band_end - top) > height * 0.08:
+        eave_y = band_end
+    else:
+        eave_lo = top + int(height * 0.10)
+        eave_hi = top + int(height * 0.40)
+        eave_y = _peak_row(_band_ink_rows(ink, envelope, eave_lo, eave_hi), eave_lo)
+    eave_y = int(np.clip(eave_y, top + int(height * 0.10), top + int(height * 0.42)))
 
     found_lo = top + int(height * 0.86)
     foundation_y = _peak_row(_band_ink_rows(ink, envelope, found_lo, bot + 1), found_lo)
@@ -115,6 +141,8 @@ def _inner_rectangles(
     ink: np.ndarray,
     envelope: np.ndarray,
     building_h: int,
+    eave_y: int,
+    foundation_y: int,
 ) -> list[tuple[np.ndarray, float, str]]:
     """Find window/vent candidates from nested line rectangles."""
     h, w = ink.shape
@@ -128,23 +156,27 @@ def _inner_rectangles(
     out: list[tuple[np.ndarray, float, str]] = []
     env_area = max(int(np.count_nonzero(envelope)), 1)
     max_win_h = max(18, int(building_h * 0.28))
-    max_win_area = int(env_area * 0.10)
+    max_win_area = int(env_area * 0.08)
 
     for i, cnt in enumerate(contours):
         x, y, bw, bh = cv2.boundingRect(cnt)
-        if bw < 10 or bh < 10:
+        if bw < 12 or bh < 12:
+            continue
+        if y + bh < eave_y + 4 or y > foundation_y - 4:
             continue
         area = bw * bh
-        if area < 90 or area > max_win_area or bh > max_win_h:
+        if area < 120 or area > max_win_area or bh > max_win_h:
             continue
         approx = cv2.approxPolyDP(cnt, 0.04 * cv2.arcLength(cnt, True), True)
+        if len(approx) == 3:
+            continue
         if len(approx) < 4:
             continue
         rectness = area / max(cv2.contourArea(cnt), 1)
-        if rectness < 0.7:
+        if rectness < 0.72:
             continue
         aspect = bw / max(bh, 1)
-        if aspect < 0.35 or aspect > 5:
+        if aspect < 0.35 or aspect > 4.2:
             continue
         mask = np.zeros((h, w), np.uint8)
         cv2.drawContours(mask, [cnt], -1, 255, -1)
@@ -154,15 +186,18 @@ def _inner_rectangles(
         for row in range(0, bh, max(1, bh // 8)):
             horiz += int(np.mean(roi[row]) > 20)
         has_child = hierarchy[i][2] != -1
-        if bh <= 36 and bw <= 36 and horiz >= 3 and 0.6 <= aspect <= 1.6:
+        if bh <= 32 and bw <= 32 and horiz >= 3 and 0.7 <= aspect <= 1.5:
             kind = "vent"
             score = 0.74
-        elif has_child and 0.5 <= aspect <= 4.0:
+        elif has_child and 0.55 <= aspect <= 3.8:
             kind = "window"
             score = 0.78
-        elif 0.7 <= aspect <= 3.2 and area < env_area * 0.04:
+        elif 0.9 <= aspect <= 2.8 and env_area * 0.008 <= area <= env_area * 0.07:
             kind = "window"
-            score = 0.52
+            score = 0.58
+        elif 0.32 <= aspect <= 0.7 and bh > bw and env_area * 0.004 <= area <= env_area * 0.04:
+            kind = "window"
+            score = 0.55
         else:
             continue
         out.append((mask, score, kind))
@@ -207,23 +242,10 @@ def perceive(bgr: np.ndarray) -> PerceiveResult:
 
     ys, xs = np.where(envelope > 0)
     building_h = int(ys.max() - ys.min()) if ys.size else h
-    for mask, score, kind in _inner_rectangles(ink, envelope, building_h):
+    for mask, score, kind in _inner_rectangles(ink, envelope, building_h, eave_y, foundation_y):
         r = _region(kind, mask, score, "geometry")
         if r:
             regions.append(r)
-
-    # Thin vertical pipes on the right/left envelope edge.
-    ys, xs = np.where(envelope > 0)
-    if xs.size:
-        left, right = int(xs.min()), int(xs.max())
-        for x0 in (left, right - 6):
-            strip = np.zeros((h, w), np.uint8)
-            x1 = min(w, max(0, x0) + 7)
-            strip[:, max(0, x0) : x1] = envelope[:, max(0, x0) : x1]
-            strip[:eave_y] = 0
-            r = _region("pipe", strip, 0.4, "geometry")
-            if r and int(np.count_nonzero(r.mask)) < (h * w * 0.02):
-                regions.append(r)
 
     return PerceiveResult(
         bgr=bgr,

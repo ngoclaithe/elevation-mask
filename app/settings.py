@@ -13,10 +13,11 @@ class Settings(BaseSettings):
 
     device: str = "cpu"
     enable_florence: bool = True
-    enable_sam: bool = True
+    enable_sam: bool = False
     enable_vl_critic: bool = False
-    max_iters: int = 6
-    overlay_alpha: float = 0.45
+    max_iters: int = 3
+    overlay_alpha: float = 0.55
+    florence_max_side: int = 768
 
     florence_id: str = "microsoft/Florence-2-base"
     sam_weights: str = "sam2.1_t.pt"

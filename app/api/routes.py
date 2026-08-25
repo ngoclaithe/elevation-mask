@@ -55,6 +55,7 @@ def _run_job(
             result["areas"] = compute_areas(result["masks"], env, scale_mm_per_px)
         store.save_image(job_id, "source.png", bgr)
         store.save_image(job_id, "overlay.png", result["overlay"])
+        store.save_image(job_id, "mask.png", result["mask_layer"])
         store.save_masks(job_id, result["masks"])
         store.write_meta(
             job_id,
@@ -63,7 +64,9 @@ def _run_job(
                 "areas": result["areas"],
                 "meta": result["meta"],
                 "trace": result["trace"],
+                "source_url": f"/v1/jobs/{job_id}/source",
                 "overlay_url": f"/v1/jobs/{job_id}/overlay",
+                "mask_url": f"/v1/jobs/{job_id}/mask",
                 "masks_url": f"/v1/jobs/{job_id}/masks",
             },
         )
@@ -121,6 +124,22 @@ def get_overlay(job_id: str) -> FileResponse:
     path = store.file(job_id, "overlay.png")
     if path is None:
         raise HTTPException(404, "Overlay not ready")
+    return FileResponse(path, media_type="image/png")
+
+
+@router.get("/v1/jobs/{job_id}/mask")
+def get_mask_layer(job_id: str) -> FileResponse:
+    path = store.file(job_id, "mask.png")
+    if path is None:
+        raise HTTPException(404, "Mask not ready")
+    return FileResponse(path, media_type="image/png")
+
+
+@router.get("/v1/jobs/{job_id}/source")
+def get_source(job_id: str) -> FileResponse:
+    path = store.file(job_id, "source.png")
+    if path is None:
+        raise HTTPException(404, "Source not ready")
     return FileResponse(path, media_type="image/png")
 
 

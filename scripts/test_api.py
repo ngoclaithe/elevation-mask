@@ -83,8 +83,14 @@ def save(path: Path, job: dict, elapsed_s: float) -> None:
         return
     overlay = _request(f"{API}/v1/jobs/{job['id']}/overlay")
     (dest / "overlay.png").write_bytes(overlay)
+    mask = _request(f"{API}/v1/jobs/{job['id']}/mask")
+    (dest / "mask.png").write_bytes(mask)
+    source = _request(f"{API}/v1/jobs/{job['id']}/source")
+    (dest / "source.png").write_bytes(source)
     timing = (job.get("meta") or {}).get("timing") or {}
     print(f"  TIME {path.name}: {elapsed_s:.1f}s client  server={timing}")
+    print(f"  source {dest / 'source.png'}")
+    print(f"  mask   {dest / 'mask.png'}")
     print(f"  overlay {dest / 'overlay.png'}")
     print(json.dumps(job.get("areas") or {}, indent=2))
 

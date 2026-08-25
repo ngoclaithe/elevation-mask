@@ -10,7 +10,7 @@ from app.pipeline.critic import Issue, critique
 from app.pipeline.fixer import apply_fixes
 from app.pipeline.florence import propose_boxes
 from app.pipeline.geometry import PerceiveResult, Region, perceive
-from app.pipeline.render import render_overlay
+from app.pipeline.render import composite_overlay, render_mask_layer, solidify_masks
 from app.pipeline.sam_seg import refine_regions
 from app.pipeline.snap import snap_regions
 from app.settings import settings
@@ -75,13 +75,13 @@ def run_agent(bgr: np.ndarray, max_iters: int | None = None) -> dict:
     t_sam = time.perf_counter()
     masks = snap_regions(perceived, merged)
 
-    overlay = render_overlay(perceived.bgr, masks)
     last_issues: list[Issue] = []
     trace: list[dict] = []
+    overlay = composite_overlay(perceived.bgr, render_mask_layer(solidify_masks(masks)))
 
     for step in range(iters):
         last_issues = critique(perceived, masks)
-        overlay = render_overlay(perceived.bgr, masks)
+        overlay = composite_overlay(perceived.bgr, render_mask_layer(solidify_masks(masks)))
         last_issues.extend(_vl_issues(perceived.bgr, overlay))
         trace.append(
             {
@@ -95,6 +95,10 @@ def run_agent(bgr: np.ndarray, max_iters: int | None = None) -> dict:
         masks = apply_fixes(perceived, masks, last_issues)
         masks = snap_regions(perceived, _as_regions(masks))
 
+    masks = solidify_masks(masks)
+    mask_layer = render_mask_layer(masks)
+    overlay = composite_overlay(bgr, mask_layer)
+
     t_end = time.perf_counter()
     timing = {
         "perceive_ms": round((t_perceive - t0) * 1000),
@@ -106,6 +110,7 @@ def run_agent(bgr: np.ndarray, max_iters: int | None = None) -> dict:
     log.info("agent timing %s", timing)
     return {
         "masks": masks,
+        "mask_layer": mask_layer,
         "overlay": overlay,
         "areas": compute_areas(masks, perceived.envelope),
         "trace": trace,

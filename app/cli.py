@@ -35,6 +35,8 @@ def main() -> None:
     out = args.out / args.image.stem
     out.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(out / "overlay.png"), result["overlay"])
+    cv2.imwrite(str(out / "mask.png"), result["mask_layer"])
+    cv2.imwrite(str(out / "source.png"), bgr)
     for name, mask in result["masks"].items():
         cv2.imwrite(str(out / f"{name}.png"), mask)
     (out / "areas.json").write_text(

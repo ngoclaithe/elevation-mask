@@ -12,6 +12,8 @@ class JobStatus(BaseModel):
     meta: dict | None = None
     trace: list[dict] | None = None
     overlay_url: str | None = None
+    mask_url: str | None = None
+    source_url: str | None = None
     masks_url: str | None = None
 
 

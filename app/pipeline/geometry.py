@@ -97,24 +97,36 @@ def _horizontal_line_peaks(ink: np.ndarray, envelope: np.ndarray) -> tuple[int, 
     top, bot = int(ys.min()), int(ys.max())
     height = max(bot - top, 1)
     dens = _ink_density_by_row(ink, envelope)
-    mid = top + int(height * 0.52)
-    thresh = max(0.14, float(np.median(dens[top:bot]) + 0.04))
-    eave_y = top + int(height * 0.18)
-    in_band = False
+    widths = np.array([_row_width(envelope, y) for y in range(envelope.shape[0])])
+    mid = top + int(height * 0.50)
+    thresh = max(0.18, float(np.median(dens[top:bot]) + 0.06))
     band_end = None
+    in_band = False
     for y in range(top, mid):
         if dens[y] >= thresh:
             in_band = True
             band_end = y
-        elif in_band and dens[y] < thresh * 0.72:
+        elif in_band and dens[y] < thresh * 0.7:
             break
-    if band_end is not None and (band_end - top) > height * 0.08:
-        eave_y = band_end
+    hatch = (
+        band_end is not None
+        and (band_end - top) > height * 0.12
+        and float(np.mean(dens[top:band_end])) > 0.20
+    )
+    if hatch:
+        eave_y = int(band_end)
     else:
-        eave_lo = top + int(height * 0.10)
-        eave_hi = top + int(height * 0.40)
-        eave_y = _peak_row(_band_ink_rows(ink, envelope, eave_lo, eave_hi), eave_lo)
-    eave_y = int(np.clip(eave_y, top + int(height * 0.10), top + int(height * 0.42)))
+        upper_hi = top + int(height * 0.45)
+        upper_max = max(int(widths[top:upper_hi].max()), 1)
+        eave_y = top + int(height * 0.22)
+        for y in range(top + int(height * 0.08), upper_hi):
+            if widths[y] >= 0.90 * upper_max:
+                eave_y = y
+                break
+        lo = max(top, eave_y - int(height * 0.06))
+        hi = min(upper_hi, eave_y + int(height * 0.08))
+        eave_y = _peak_row(_band_ink_rows(ink, envelope, lo, hi), lo)
+    eave_y = int(np.clip(eave_y, top + int(height * 0.12), top + int(height * 0.40)))
 
     found_lo = top + int(height * 0.86)
     foundation_y = _peak_row(_band_ink_rows(ink, envelope, found_lo, bot + 1), found_lo)

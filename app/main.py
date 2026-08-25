@@ -22,8 +22,8 @@ app.include_router(router)
 @app.on_event("startup")
 def _warmup() -> None:
     def load() -> None:
-        if settings.enable_florence:
-            from app.pipeline.florence import _load
+        if settings.enable_yolo_world:
+            from app.pipeline.detector import _load
 
             _load()
         if settings.enable_sam:

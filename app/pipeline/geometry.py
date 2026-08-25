@@ -440,16 +440,6 @@ def perceive(bgr: np.ndarray) -> PerceiveResult:
 
     regions: list[Region] = []
     faces: list[Face] = []
-    for label, mask, score in (
-        ("roof", roof, 0.86),
-        ("wall_l2", wall_l2, 0.74),
-        ("wall_l1", wall_l1, 0.74),
-        ("foundation", foundation, 0.80),
-    ):
-        r = _region(label, mask, score, "geometry")
-        if r:
-            regions.append(r)
-
     for mask, score, kind in openings:
         r = _region(kind, mask, score, "geometry")
         if r and r.box:

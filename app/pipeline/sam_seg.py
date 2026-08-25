@@ -21,7 +21,7 @@ def _load():
 def refine_regions(bgr: np.ndarray, regions: list[Region]) -> list[Region]:
     if not settings.enable_sam:
         return regions
-    boxes = [r for r in regions if r.box and r.source == "florence"]
+    boxes = [r for r in regions if r.box and r.source in {"florence", "yolo"}]
     if not boxes:
         return regions
     try:

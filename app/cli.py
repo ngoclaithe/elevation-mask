@@ -1,4 +1,4 @@
-"""CLI: python -m app.cli samples/image_1.jpg --no-florence --no-sam"""
+"""CLI: python -m app.cli image_1.jpg --no-yolo --no-sam"""
 
 from __future__ import annotations
 
@@ -16,13 +16,13 @@ def main() -> None:
     parser.add_argument("image", type=Path)
     parser.add_argument("--out", type=Path, default=Path("output"))
     parser.add_argument("--max-iters", type=int, default=6)
-    parser.add_argument("--no-florence", action="store_true")
+    parser.add_argument("--no-yolo", action="store_true")
     parser.add_argument("--no-sam", action="store_true")
     parser.add_argument("--vl-critic", action="store_true")
     args = parser.parse_args()
 
-    if args.no_florence:
-        settings.enable_florence = False
+    if args.no_yolo:
+        settings.enable_yolo_world = False
     if args.no_sam:
         settings.enable_sam = False
     if args.vl_critic:

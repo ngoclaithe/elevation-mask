@@ -70,7 +70,7 @@ def snap_regions(perceived: PerceiveResult, regions: list[Region]) -> dict[str, 
         if region.label not in stacked:
             continue
         snapped = region.mask
-        if region.source in {"florence", "sam"} and region.label in {"window", "vent"}:
+        if region.source in {"yolo", "florence", "sam"} and region.label in {"window", "vent"}:
             snapped = _fill_to_ink(region.mask, perceived.envelope, perceived.ink)
         else:
             snapped = _clip(region.mask, perceived.envelope)
@@ -90,7 +90,11 @@ def snap_regions(perceived: PerceiveResult, regions: list[Region]) -> dict[str, 
             claimed = cv2.bitwise_or(claimed, mask)
     leftover = cv2.bitwise_and(perceived.envelope, cv2.bitwise_not(claimed))
     if int(np.count_nonzero(leftover)):
-        for name in ("roof", "wall_l2", "wall_l1", "foundation"):
+        detector_labels = {r.label for r in regions if r.source == "yolo"}
+        fill_names = ["wall_l2", "wall_l1", "foundation"]
+        if "roof" not in detector_labels:
+            fill_names.insert(0, "roof")
+        for name in fill_names:
             prior = perceived.geometry.get(name)
             if prior is None:
                 continue

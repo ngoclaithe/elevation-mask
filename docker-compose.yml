@@ -5,7 +5,12 @@ services:
       - "8787:8080"
     environment:
       ENABLE_FLORENCE: "false"
+      ENABLE_YOLO_WORLD: "true"
       ENABLE_SAM: "false"
+      ENABLE_VL_CRITIC: "false"
+      DEVICE: cpu
+      PYTHONPATH: /app/stubs
+      YOLO_CONFIG_DIR: /root/.cache/Ultralytics
       ENABLE_VL_CRITIC: "false"
       DEVICE: cpu
       PYTHONPATH: /app/stubs

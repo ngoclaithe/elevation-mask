@@ -33,6 +33,7 @@ def _run_job(
     bgr: np.ndarray,
     max_iters: int,
     enable_florence: bool | None,
+    enable_yolo_world: bool | None,
     enable_sam: bool | None,
     enable_vl_critic: bool | None,
     scale_mm_per_px: float | None,
@@ -42,6 +43,8 @@ def _run_job(
         with _run_lock:
             if enable_florence is not None:
                 settings.enable_florence = enable_florence
+            if enable_yolo_world is not None:
+                settings.enable_yolo_world = enable_yolo_world
             if enable_sam is not None:
                 settings.enable_sam = enable_sam
             if enable_vl_critic is not None:
@@ -77,7 +80,12 @@ def _run_job(
 
 @router.get("/health")
 def health() -> dict:
-    return {"ok": True, "service": "elevation-mask"}
+    return {
+        "ok": True,
+        "service": "elevation-mask",
+        "detector": "yolo-world" if settings.enable_yolo_world else "none",
+        "florence": settings.enable_florence,
+    }
 
 
 @router.get("/v1/classes")
@@ -93,6 +101,7 @@ async def segment(
     image: Annotated[UploadFile, File()],
     max_iters: Annotated[int, Form()] = 6,
     enable_florence: Annotated[bool | None, Form()] = None,
+    enable_yolo_world: Annotated[bool | None, Form()] = None,
     enable_sam: Annotated[bool | None, Form()] = None,
     enable_vl_critic: Annotated[bool | None, Form()] = None,
     scale_mm_per_px: Annotated[float | None, Form()] = None,
@@ -104,7 +113,7 @@ async def segment(
     job_id = store.create()
     thread = threading.Thread(
         target=_run_job,
-        args=(job_id, bgr, max_iters, enable_florence, enable_sam, enable_vl_critic, scale_mm_per_px),
+        args=(job_id, bgr, max_iters, enable_florence, enable_yolo_world, enable_sam, enable_vl_critic, scale_mm_per_px),
         daemon=True,
     )
     thread.start()

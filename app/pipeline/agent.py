@@ -7,6 +7,7 @@ import numpy as np
 
 from app.pipeline.area import compute_areas
 from app.pipeline.critic import Issue, critique
+from app.pipeline.detector import propose_boxes
 from app.pipeline.fixer import apply_fixes
 from app.pipeline.geometry import PerceiveResult, Region, perceive
 from app.pipeline.render import composite_overlay, render_mask_layer, solidify_masks
@@ -37,37 +38,32 @@ def _as_regions(masks: dict[str, np.ndarray]) -> list[Region]:
     ]
 
 
-def _florence_boxes(bgr: np.ndarray) -> list[Region]:
-    if not settings.enable_florence:
-        return []
-    from app.pipeline.florence import propose_boxes
-
-    return propose_boxes(bgr)
-
-
-def _filter_florence(regions: list[Region], perceived: PerceiveResult) -> list[Region]:
+def _filter_detections(regions: list[Region], perceived: PerceiveResult) -> list[Region]:
     env_area = max(int(np.count_nonzero(perceived.envelope)), 1)
     kept: list[Region] = []
     for region in regions:
         if region.box is None:
             continue
         x1, y1, x2, y2 = region.box
-        cy = 0.5 * (y1 + y2)
-        if region.label == "roof":
-            mask = region.mask.copy()
-            mask[perceived.eave_y :, :] = 0
+        area = max(1, (x2 - x1) * (y2 - y1))
+        if region.label.startswith("wall") and area > 0.35 * env_area:
+            continue
+        if region.label == "roof" and area > 0.55 * env_area:
+            continue
+        mask = region.mask
+        if perceived.envelope is not None:
+            mask = np.where(perceived.envelope > 0, mask, 0).astype(np.uint8)
             if int(np.count_nonzero(mask)) < 40:
                 continue
-            kept.append(
-                Region(label="roof", mask=mask, score=region.score, source=region.source, box=region.box)
+        kept.append(
+            Region(
+                label=region.label,
+                mask=mask,
+                score=region.score,
+                source=region.source,
+                box=region.box,
             )
-            continue
-        if region.label in {"window", "vent"}:
-            if cy < perceived.eave_y or cy > perceived.foundation_y:
-                continue
-        if region.label.startswith("wall") and (x2 - x1) * (y2 - y1) > 0.3 * env_area:
-            continue
-        kept.append(region)
+        )
     return kept
 
 
@@ -76,9 +72,9 @@ def run_agent(bgr: np.ndarray, max_iters: int | None = None) -> dict:
     t0 = time.perf_counter()
     perceived = perceive(bgr)
     t_perceive = time.perf_counter()
-    florence = _filter_florence(_florence_boxes(perceived.bgr), perceived)
-    t_florence = time.perf_counter()
-    merged = refine_regions(perceived.bgr, list(perceived.regions) + florence)
+    detections = _filter_detections(propose_boxes(perceived.bgr), perceived)
+    t_detect = time.perf_counter()
+    merged = refine_regions(perceived.bgr, list(perceived.regions) + detections)
     t_sam = time.perf_counter()
     masks = snap_regions(perceived, merged)
 
@@ -94,13 +90,13 @@ def run_agent(bgr: np.ndarray, max_iters: int | None = None) -> dict:
             {
                 "iter": step,
                 "issues": [i.to_dict() for i in last_issues],
-                "florence_boxes": len(florence),
+                "detector_boxes": len(detections),
             }
         )
         if not last_issues:
             break
         masks = apply_fixes(perceived, masks, last_issues)
-        masks = snap_regions(perceived, _as_regions(masks))
+        masks = snap_regions(perceived, _as_regions(masks) + detections)
 
     masks = solidify_masks(masks, perceived.envelope)
     mask_layer = render_mask_layer(masks)
@@ -109,12 +105,12 @@ def run_agent(bgr: np.ndarray, max_iters: int | None = None) -> dict:
     t_end = time.perf_counter()
     timing = {
         "perceive_ms": round((t_perceive - t0) * 1000),
-        "florence_ms": round((t_florence - t_perceive) * 1000),
-        "sam_ms": round((t_sam - t_florence) * 1000),
+        "detector_ms": round((t_detect - t_perceive) * 1000),
+        "sam_ms": round((t_sam - t_detect) * 1000),
         "rest_ms": round((t_end - t_sam) * 1000),
         "total_ms": round((t_end - t0) * 1000),
     }
-    log.info("agent timing %s", timing)
+    log.info("agent timing %s detector=%s", timing, len(detections))
     return {
         "masks": masks,
         "mask_layer": mask_layer,
@@ -123,11 +119,12 @@ def run_agent(bgr: np.ndarray, max_iters: int | None = None) -> dict:
         "trace": trace,
         "envelope_pixels": int(np.count_nonzero(perceived.envelope)),
         "meta": {
-            "geometry": "cad-hatch-faces",
+            "detector": "yolo-world" if settings.enable_yolo_world else "none",
+            "geometry": "leftover-prior",
             "eave_y": perceived.eave_y,
             "floor_y": perceived.floor_y,
             "foundation_y": perceived.foundation_y,
-            "florence_boxes": len(florence),
+            "detector_boxes": len(detections),
             "iters": len(trace),
             "faces": len(perceived.faces),
             "open_issues": [i.to_dict() for i in last_issues],

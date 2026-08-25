@@ -1,0 +1,89 @@
+from __future__ import annotations
+
+import logging
+from functools import lru_cache
+
+import cv2
+import numpy as np
+
+from app.pipeline.classes import canonical_label
+from app.pipeline.geometry import Region
+from app.settings import settings
+
+log = logging.getLogger(__name__)
+
+_CLASSES = [
+    "window",
+    "sliding window",
+    "roof",
+    "tile roof",
+    "gable",
+    "vent",
+    "louver",
+    "foundation",
+    "door",
+]
+
+
+@lru_cache(maxsize=1)
+def _load():
+    from ultralytics import YOLOWorld
+
+    model = YOLOWorld(settings.yolo_world_id)
+    model.set_classes(_CLASSES)
+    return model
+
+
+def _thicken_cad(bgr: np.ndarray) -> np.ndarray:
+    """Photo detectors miss 1px CAD ink; thicken strokes so frames read as objects."""
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    ink = (gray < 90).astype(np.uint8) * 255
+    ink = cv2.dilate(ink, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)))
+    out = np.full_like(bgr, 255)
+    out[ink > 0] = (20, 20, 20)
+    return out
+
+
+def propose_boxes(bgr: np.ndarray) -> list[Region]:
+    if not settings.enable_yolo_world:
+        return []
+    try:
+        model = _load()
+    except Exception:
+        log.exception("YOLO-World unavailable")
+        return []
+
+    h, w = bgr.shape[:2]
+    views = [bgr, _thicken_cad(bgr)]
+    regions: list[Region] = []
+    try:
+        for img in views:
+            results = model.predict(img, conf=settings.yolo_conf, verbose=False, device=settings.device)
+            if not results:
+                continue
+            res = results[0]
+            if res.boxes is None:
+                continue
+            xyxy = res.boxes.xyxy.cpu().numpy()
+            cls_ids = res.boxes.cls.cpu().numpy().astype(int)
+            confs = res.boxes.conf.cpu().numpy()
+            names = res.names
+            for box, cid, score in zip(xyxy, cls_ids, confs):
+                raw = names.get(int(cid), "") if isinstance(names, dict) else str(names[int(cid)])
+                label = canonical_label(raw)
+                if label is None:
+                    continue
+                x1, y1, x2, y2 = [int(round(v)) for v in box]
+                x1, y1 = max(0, x1), max(0, y1)
+                x2, y2 = min(w - 1, x2), min(h - 1, y2)
+                if x2 - x1 < 8 or y2 - y1 < 8:
+                    continue
+                mask = np.zeros((h, w), np.uint8)
+                cv2.rectangle(mask, (x1, y1), (x2, y2), 255, -1)
+                regions.append(
+                    Region(label=label, mask=mask, score=float(score), source="yolo", box=(x1, y1, x2, y2))
+                )
+    except Exception:
+        log.exception("YOLO-World predict failed")
+        return []
+    return regions

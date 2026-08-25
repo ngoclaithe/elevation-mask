@@ -29,6 +29,7 @@ def _load():
         settings.florence_id,
         trust_remote_code=True,
         torch_dtype=dtype,
+        attn_implementation="eager",
     ).to(device)
     model.eval()
     processor = AutoProcessor.from_pretrained(settings.florence_id, trust_remote_code=True)

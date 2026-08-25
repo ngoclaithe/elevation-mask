@@ -8,6 +8,7 @@ services:
       ENABLE_SAM: "true"
       ENABLE_VL_CRITIC: "false"
       DEVICE: cpu
+      PYTHONPATH: /app/stubs
     volumes:
       - job-data:/app/data
       - hf-cache:/root/.cache

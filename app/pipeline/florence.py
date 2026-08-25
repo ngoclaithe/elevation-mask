@@ -20,6 +20,13 @@ _PROMPT = (
 
 @lru_cache(maxsize=1)
 def _load():
+    import sys
+    from pathlib import Path
+
+    stub = Path(__file__).resolve().parents[2] / "stubs"
+    if stub.exists() and str(stub) not in sys.path:
+        sys.path.insert(0, str(stub))
+
     import torch
     from transformers import AutoModelForCausalLM, AutoProcessor
 

@@ -5,15 +5,16 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-
-COPY requirements.txt .
 RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch torchvision
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
 COPY samples ./samples
+COPY stubs ./stubs
 
 ENV PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app/stubs \
     ENABLE_FLORENCE=true \
     ENABLE_SAM=true \
     ENABLE_VL_CRITIC=false \

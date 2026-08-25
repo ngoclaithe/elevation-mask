@@ -8,33 +8,25 @@ from app.pipeline.snap import resolve_priority
 from app.settings import settings
 
 
-def solidify_mask(mask: np.ndarray, kernel: int = 9, min_area: int | None = None) -> np.ndarray:
-    """Turn speckled pixels into connected filled polygons."""
+def solidify_mask(mask: np.ndarray, kernel: int = 3, min_area: int | None = None) -> np.ndarray:
+    """Close tiny CAD gaps without rounding architecture into blobs."""
     if mask is None or int(np.count_nonzero(mask)) == 0:
         return mask if mask is not None else np.zeros((1, 1), np.uint8)
     k = max(3, kernel | 1)
     closed = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (k, k)))
-    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    n, labels, stats, _ = cv2.connectedComponentsWithStats((closed > 0).astype(np.uint8))
     out = np.zeros_like(closed)
-    if min_area is None:
-        min_area = max(40, int(closed.shape[0] * closed.shape[1] * 0.00015))
-    for cnt in contours:
-        if cv2.contourArea(cnt) < min_area:
-            continue
-        peri = cv2.arcLength(cnt, True)
-        approx = cv2.approxPolyDP(cnt, max(1.0, 0.002 * peri), True)
-        cv2.drawContours(out, [approx], -1, 255, thickness=cv2.FILLED)
-    holes = cv2.morphologyEx(out, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
-    return holes
+    thresh = 20 if min_area is None else min_area
+    for i in range(1, n):
+        if int(stats[i, cv2.CC_STAT_AREA]) >= thresh:
+            out[labels == i] = 255
+    return out
 
 
 def solidify_masks(masks: dict[str, np.ndarray], envelope: np.ndarray | None = None) -> dict[str, np.ndarray]:
     out: dict[str, np.ndarray] = {}
     for name, mask in masks.items():
-        if name in {"window", "vent", "pipe"}:
-            solidified = solidify_mask(mask, kernel=3, min_area=20)
-        else:
-            solidified = solidify_mask(mask)
+        solidified = solidify_mask(mask, kernel=3, min_area=16)
         if envelope is not None:
             solidified = cv2.bitwise_and(solidified, envelope)
         out[name] = solidified

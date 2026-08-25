@@ -16,6 +16,14 @@ class Region:
 
 
 @dataclass
+class Face:
+    mask: np.ndarray
+    label: str
+    score: float
+    box: tuple[int, int, int, int]
+
+
+@dataclass
 class PerceiveResult:
     bgr: np.ndarray
     gray: np.ndarray
@@ -26,6 +34,8 @@ class PerceiveResult:
     foundation_y: int
     regions: list[Region] = field(default_factory=list)
     geometry: dict[str, np.ndarray] = field(default_factory=dict)
+    faces: list[Face] = field(default_factory=list)
+    hatch: np.ndarray | None = None
 
 
 def _ensure_ink_black(gray: np.ndarray) -> np.ndarray:
@@ -35,10 +45,10 @@ def _ensure_ink_black(gray: np.ndarray) -> np.ndarray:
     return bw
 
 
-def _envelope(paper: np.ndarray) -> np.ndarray:
+def _envelope_flood(paper: np.ndarray) -> np.ndarray:
     h, w = paper.shape
     ink = np.where(paper == 0, 255, 0).astype(np.uint8)
-    ink = cv2.dilate(ink, cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7)))
+    ink = cv2.dilate(ink, cv2.getStructuringElement(cv2.MORPH_RECT, (11, 11)))
     sealed = np.where(ink > 0, 0, 255).astype(np.uint8)
     flood = sealed.copy()
     ff_mask = np.zeros((h + 2, w + 2), np.uint8)
@@ -47,6 +57,7 @@ def _envelope(paper: np.ndarray) -> np.ndarray:
             cv2.floodFill(flood, ff_mask, (x, y), 128)
     env = np.where(flood != 128, 255, 0).astype(np.uint8)
     env = cv2.erode(env, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)))
+    env = cv2.morphologyEx(env, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (5, 51)))
     n, labels, stats, _ = cv2.connectedComponentsWithStats((env > 0).astype(np.uint8))
     if n <= 2:
         return env
@@ -56,21 +67,67 @@ def _envelope(paper: np.ndarray) -> np.ndarray:
     for i in range(1, n):
         if stats[i, cv2.CC_STAT_AREA] >= 0.25 * largest:
             out[labels == i] = 255
-    out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9)))
-    return out
+    return cv2.morphologyEx(out, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9)))
 
 
-def _band_ink_rows(ink: np.ndarray, envelope: np.ndarray, y0: int, y1: int) -> np.ndarray:
-    y0 = max(0, y0)
-    y1 = min(ink.shape[0], max(y0 + 1, y1))
-    band = ink[y0:y1] & envelope[y0:y1]
-    return np.sum(band > 0, axis=1)
+def _envelope_mass(paper: np.ndarray) -> np.ndarray:
+    """Building body from ink mass, ignoring page-wide dimension/level guides."""
+    h, w = paper.shape
+    ink = np.where(paper == 0, 255, 0).astype(np.uint8)
+    dashed = cv2.morphologyEx(ink, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (17, 1)))
+    guides = cv2.morphologyEx(
+        dashed, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (max(48, int(0.50 * w)), 1))
+    )
+    core = cv2.bitwise_and(ink, cv2.bitwise_not(guides))
+    thick = cv2.dilate(core, cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)))
+    n, labels, stats, _ = cv2.connectedComponentsWithStats((thick > 0).astype(np.uint8))
+    keep = np.zeros_like(ink)
+    min_h = max(24, int(0.18 * h))
+    min_a = max(400, int(0.012 * h * w))
+    for i in range(1, n):
+        bw = int(stats[i, cv2.CC_STAT_WIDTH])
+        bh = int(stats[i, cv2.CC_STAT_HEIGHT])
+        area = int(stats[i, cv2.CC_STAT_AREA])
+        if bh < min_h or area < min_a:
+            continue
+        if bh < 18 and bw > 0.45 * w:
+            continue
+        keep[labels == i] = 255
+    if int(np.count_nonzero(keep)) < min_a:
+        keep = thick
+    keep = cv2.morphologyEx(keep, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (13, 13)))
+    inv = np.where(keep > 0, 0, 255).astype(np.uint8)
+    flood = inv.copy()
+    ff_mask = np.zeros((h + 2, w + 2), np.uint8)
+    for x, y in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)):
+        if flood[y, x] == 255:
+            cv2.floodFill(flood, ff_mask, (x, y), 128)
+    env = np.where(flood != 128, 255, 0).astype(np.uint8)
+    env = cv2.erode(env, cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2)))
+    n, labels, stats, _ = cv2.connectedComponentsWithStats((env > 0).astype(np.uint8))
+    if n <= 2:
+        return env
+    keep_i = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    largest = stats[keep_i, cv2.CC_STAT_AREA]
+    out = np.zeros_like(env)
+    for i in range(1, n):
+        if stats[i, cv2.CC_STAT_AREA] >= 0.20 * largest:
+            out[labels == i] = 255
+    return cv2.morphologyEx(out, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9)))
 
 
-def _peak_row(scores: np.ndarray, y0: int) -> int:
-    if scores.size == 0:
-        return y0
-    return int(y0 + np.argmax(scores))
+def _envelope(paper: np.ndarray) -> np.ndarray:
+    flood = _envelope_flood(paper)
+    mass = _envelope_mass(paper)
+    frac_f = float(flood.mean()) / 255.0
+    frac_m = float(mass.mean()) / 255.0
+    if frac_m < 0.18 and frac_f > frac_m:
+        return flood
+    if 0.18 <= frac_m <= 0.58:
+        return mass
+    if 0.18 <= frac_f <= 0.70:
+        return flood
+    return flood if frac_f < frac_m else mass
 
 
 def _column_profile(envelope: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -94,14 +151,6 @@ def _fill_missing(arr: np.ndarray) -> np.ndarray:
     return np.round(out).astype(np.int32)
 
 
-def _median_smooth(arr: np.ndarray, k: int = 15) -> np.ndarray:
-    k = max(3, k | 1)
-    pad = k // 2
-    padded = np.pad(arr.astype(np.int32), pad, mode="edge")
-    windows = np.lib.stride_tricks.sliding_window_view(padded, k)
-    return np.median(windows, axis=1).astype(np.int32)
-
-
 def _runs_1d(mask: np.ndarray) -> list[tuple[int, int]]:
     runs: list[tuple[int, int]] = []
     start = None
@@ -116,162 +165,137 @@ def _runs_1d(mask: np.ndarray) -> list[tuple[int, int]]:
     return runs
 
 
-def _horizontal_ink(ink: np.ndarray, envelope: np.ndarray) -> np.ndarray:
+def _median_smooth(arr: np.ndarray, k: int = 15) -> np.ndarray:
+    k = max(3, k | 1)
+    pad = k // 2
+    padded = np.pad(arr.astype(np.int32), pad, mode="edge")
+    windows = np.lib.stride_tricks.sliding_window_view(padded, k)
+    return np.median(windows, axis=1).astype(np.int32)
+
+
+def _line_maps(ink: np.ndarray, envelope: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    h, w = ink.shape
     lines = ((ink > 0) & (envelope > 0)).astype(np.uint8) * 255
-    return cv2.morphologyEx(lines, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (21, 1)))
+    horiz = cv2.morphologyEx(
+        lines, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (max(12, w // 70), 1))
+    )
+    vert = cv2.morphologyEx(
+        lines, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(12, h // 70)))
+    )
+    return horiz, vert
 
 
-def _hatch_eave(
+def _band_ink_rows(ink: np.ndarray, envelope: np.ndarray, y0: int, y1: int) -> np.ndarray:
+    y0 = max(0, y0)
+    y1 = min(ink.shape[0], max(y0 + 1, y1))
+    band = ink[y0:y1] & envelope[y0:y1]
+    return np.sum(band > 0, axis=1)
+
+
+def _peak_row(scores: np.ndarray, y0: int) -> int:
+    if scores.size == 0:
+        return y0
+    return int(y0 + np.argmax(scores))
+
+
+def _roof_from_hatch(
     horiz: np.ndarray,
     envelope: np.ndarray,
-    top_s: np.ndarray,
-    col_mask: np.ndarray,
-    max_depth: int,
-) -> int | None:
-    xs = np.flatnonzero(col_mask)
-    if xs.size < 8:
-        return None
-    x0, x1 = int(xs.min()), int(xs.max()) + 1
-    y0 = int(np.median(top_s[col_mask]))
-    y1 = min(envelope.shape[0], y0 + max(8, max_depth))
-    energy = np.zeros(max(y1 - y0, 1), np.float32)
-    for i, y in enumerate(range(y0, y1)):
-        n = int(np.count_nonzero(envelope[y, x0:x1]))
-        if n < 8:
-            continue
-        energy[i] = float(np.count_nonzero(horiz[y, x0:x1])) / n
-    if energy.size == 0 or float(energy.max()) < 0.08:
-        return None
-    thresh = max(0.10, float(energy.max()) * 0.45)
-    end = 0
-    in_band = False
-    for i, val in enumerate(energy):
-        if val >= thresh:
-            in_band = True
-            end = i
-        elif in_band and val < thresh * 0.55:
-            break
-    if not in_band:
-        return None
-    return int(y0 + end + 1)
-
-
-def _component_eave(
     top_s: np.ndarray,
     heights: np.ndarray,
-    col_mask: np.ndarray,
-    horiz: np.ndarray,
-    envelope: np.ndarray,
-    max_h: int,
-) -> int:
-    tops = top_s[col_mask]
-    hs = heights[col_mask]
-    med_top = float(np.median(tops))
-    spread = float(np.percentile(tops, 90) - np.percentile(tops, 10))
-    med_h = float(np.median(hs))
-    max_depth = int(max(8, min(0.36 * med_h, 0.28 * max_h)))
-    hatch = _hatch_eave(horiz, envelope, top_s, col_mask, max_depth)
-    if spread > 0.10 * max_h:
-        eave = int(np.percentile(tops, 88))
-        if hatch is not None:
-            eave = max(eave, hatch)
-        return eave
-    inliers = col_mask & (top_s <= int(med_top + 0.08 * max_h))
-    base = int(np.median(top_s[inliers])) if inliers.any() else int(med_top)
-    if hatch is not None and hatch > base + 3:
-        return int(min(hatch, base + max_depth))
-    return int(base + max(8, 0.13 * med_h))
-
-
-def _geometry_from_silhouette(
-    ink: np.ndarray, envelope: np.ndarray
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int, int, int]:
-    """Roof/walls follow the building outline per column — no global horizontal bands."""
+) -> tuple[np.ndarray, np.ndarray]:
+    """Roof = hatched tile bands that sit on a wall, plus the void up to the ridge."""
     h, w = envelope.shape
-    top, bot = _column_profile(envelope)
-    valid = top >= 0
-    if not valid.any():
-        z = np.zeros((h, w), np.uint8)
-        return z, z, z, z, h // 4, h // 2, int(h * 0.92)
-
-    top_s = _median_smooth(_fill_missing(top), 15)
-    bot_s = _median_smooth(_fill_missing(bot), 15)
-    heights = np.where(valid, np.maximum(bot_s - top_s, 0), 0)
-    max_h = int(heights.max()) if int(heights.max()) > 0 else 1
-    horiz = _horizontal_ink(ink, envelope)
-
-    two = valid & (heights >= int(0.70 * max_h))
-    one = valid & (heights >= int(0.38 * max_h)) & ~two
-    stub = valid & ~two & ~one
-
-    eave = np.zeros(w, np.int32)
-    for story_mask in (two, one):
-        for x0, x1 in _runs_1d(story_mask):
-            if x1 - x0 < 12:
-                continue
-            local = np.zeros(w, dtype=bool)
-            local[x0:x1] = story_mask[x0:x1]
-            if int(local.sum()) < 12:
-                continue
-            local_eave = _component_eave(top_s, heights, local, horiz, envelope, max_h)
-            eave[local] = local_eave
-    for x0, x1 in _runs_1d(stub):
-        local = np.zeros(w, dtype=bool)
-        local[x0:x1] = stub[x0:x1]
-        if not local.any():
+    hatch = cv2.dilate(horiz, cv2.getStructuringElement(cv2.MORPH_RECT, (1, 3)))
+    hatch = cv2.morphologyEx(hatch, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (17, 3)))
+    hatch = cv2.bitwise_and(hatch, envelope)
+    n, labels, stats, _ = cv2.connectedComponentsWithStats((hatch > 0).astype(np.uint8))
+    roof_hatch = np.zeros_like(hatch)
+    for i in range(1, n):
+        area = int(stats[i, cv2.CC_STAT_AREA])
+        if area < 80:
             continue
-        eave[local] = (top_s[local] + np.maximum(3, (0.10 * heights[local]).astype(np.int32))).astype(np.int32)
+        x = int(stats[i, cv2.CC_STAT_LEFT])
+        y = int(stats[i, cv2.CC_STAT_TOP])
+        bw = int(stats[i, cv2.CC_STAT_WIDTH])
+        bh = int(stats[i, cv2.CC_STAT_HEIGHT])
+        ys, xs = np.where(labels == i)
+        dist = ys.astype(np.int32) - top_s[xs]
+        med_dist = float(np.median(dist)) if dist.size else 1e9
+        med_h = float(np.median(heights[xs])) if xs.size else 1.0
+        below_y0 = min(h, y + bh)
+        below_y1 = min(h, y + bh + max(10, bh // 3))
+        below = envelope[below_y0:below_y1, x : x + bw]
+        horiz_below = horiz[below_y0:below_y1, x : x + bw]
+        below_n = max(int(np.count_nonzero(below)), 1)
+        below_hatch = float(np.count_nonzero(horiz_below)) / below_n
+        near_top = med_dist <= 0.28 * max(med_h, 1.0)
+        sits_on_wall = below_hatch < 0.10 and int(np.count_nonzero(below)) > 20
+        wide_band = bw >= 20 and bh <= int(0.38 * h)
+        if bh > int(0.50 * h):
+            continue
+        if not ((near_top or sits_on_wall) and (wide_band or near_top)):
+            continue
+        roof_hatch[labels == i] = 255
 
-    min_eave = top_s + np.maximum(3, (0.06 * heights).astype(np.int32))
-    depth = np.where(two, 0.28, 0.18) * heights
-    max_eave = top_s + np.maximum(4, depth.astype(np.int32))
+    h, w = envelope.shape
+    has = roof_hatch > 0
+    hatch_bot = np.full(w, -1, np.int32)
+    gap_max = 6
+    for x in range(w):
+        ys = np.flatnonzero(has[:, x])
+        if ys.size == 0:
+            continue
+        y1 = int(ys[0])
+        for y in ys:
+            if y <= y1 + gap_max:
+                y1 = int(y)
+            else:
+                break
+        hatch_bot[x] = y1
+
+    max_h = int(heights.max()) if int(heights.max()) > 0 else 1
+    two = (heights >= int(0.70 * max_h)) & (top_s >= 0)
+    one = (heights >= int(0.38 * max_h)) & ~two & (top_s >= 0)
+    eave = np.zeros(w, np.int32)
+    for story in (two, one):
+        for x0, x1 in _runs_1d(story):
+            local = np.zeros(w, dtype=bool)
+            local[x0:x1] = story[x0:x1]
+            hb = hatch_bot[local & (hatch_bot >= 0)]
+            if hb.size >= 8:
+                eave_val = int(np.percentile(hb, 82))
+            else:
+                eave_val = int(np.percentile(top_s[local], 85) + max(8, 0.12 * np.median(heights[local])))
+            eave[local] = eave_val
+
+    min_eave = top_s + np.maximum(4, (0.06 * heights).astype(np.int32))
+    max_eave = top_s + np.maximum(6, np.where(two, 0.32, 0.20) * heights).astype(np.int32)
     eave = np.clip(eave, min_eave, np.maximum(min_eave, max_eave))
-    eave = np.where(valid, eave, 0)
+    eave = np.where(top_s >= 0, eave, 0)
+    yy = np.arange(h)[:, None]
+    roof = ((envelope > 0) & (top_s[None, :] >= 0) & (yy >= top_s[None, :]) & (yy < eave[None, :])).astype(np.uint8) * 255
+    return roof, roof_hatch
 
-    found_depth = max(3, int(0.032 * max_h))
-    found = np.maximum(eave + 5, bot_s - found_depth)
-    found = np.minimum(found, bot_s)
-    found = np.where(valid, found, 0)
 
-    if two.any():
-        y0 = int(np.median(eave[two]))
-        y1 = int(np.median(found[two]))
-        wall_h = max(y1 - y0, 1)
-        floor_lo = y0 + int(wall_h * 0.30)
-        floor_hi = y0 + int(wall_h * 0.68)
-        floor_y = _peak_row(_band_ink_rows(ink, envelope, floor_lo, floor_hi), floor_lo)
-        if abs(floor_y - y0) < wall_h * 0.18:
-            floor_y = y0 + int(wall_h * 0.48)
-    else:
-        floor_y = int(np.median(eave[valid]) + 0.5 * (np.median(found[valid]) - np.median(eave[valid])))
+def _foundation(envelope: np.ndarray, bot_s: np.ndarray, heights: np.ndarray, valid: np.ndarray) -> tuple[np.ndarray, int]:
+    h, w = envelope.shape
+    max_h = int(heights.max()) if heights.size else h
+    depth = max(3, int(0.028 * max_h))
+    found_line = np.where(valid, np.maximum(0, bot_s - depth), h)
+    yy = np.arange(h)[:, None]
+    foundation = ((envelope > 0) & valid[None, :] & (yy >= found_line[None, :]) & (yy <= bot_s[None, :])).astype(
+        np.uint8
+    ) * 255
+    foundation_y = int(np.median(found_line[valid])) if valid.any() else int(h * 0.92)
+    return foundation, foundation_y
 
-    yy = np.arange(h, dtype=np.int32)[:, None]
-    envb = envelope > 0
-    top_b = top_s[None, :]
-    eave_b = eave[None, :]
-    found_b = found[None, :]
-    bot_b = bot_s[None, :]
-    two_b = two[None, :]
-    low_b = (one | stub)[None, :]
-    valid_b = valid[None, :]
 
-    roof = (envb & valid_b & (yy >= top_b) & (yy < eave_b)).astype(np.uint8) * 255
-    foundation = (envb & valid_b & (yy >= found_b) & (yy <= bot_b)).astype(np.uint8) * 255
-    wall_l2 = (envb & two_b & (yy >= eave_b) & (yy < floor_y) & (yy < found_b)).astype(np.uint8) * 255
-    wall_l1 = (
-        (envb & low_b & (yy >= eave_b) & (yy < found_b))
-        | (envb & two_b & (yy >= floor_y) & (yy < found_b))
-    ).astype(np.uint8) * 255
-
-    close = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 3))
-    roof = cv2.morphologyEx(roof, cv2.MORPH_CLOSE, close)
-    wall_l1 = cv2.morphologyEx(wall_l1, cv2.MORPH_CLOSE, close)
-    wall_l2 = cv2.morphologyEx(wall_l2, cv2.MORPH_CLOSE, close)
-    foundation = cv2.morphologyEx(foundation, cv2.MORPH_CLOSE, close)
-
-    eave_y = int(np.median(eave[two])) if two.any() else int(np.median(eave[valid]))
-    foundation_y = int(np.median(found[valid]))
-    return roof, wall_l1, wall_l2, foundation, eave_y, int(floor_y), foundation_y
+def _overlap_frac(mask: np.ndarray, other: np.ndarray) -> float:
+    n = int(np.count_nonzero(mask))
+    if n == 0:
+        return 0.0
+    return float(np.count_nonzero((mask > 0) & (other > 0))) / n
 
 
 def _box(mask: np.ndarray) -> tuple[int, int, int, int] | None:
@@ -289,109 +313,57 @@ def _region(label: str, mask: np.ndarray, score: float, source: str) -> Region |
     return Region(label=label, mask=mask, score=score, source=source, box=_box(mask))
 
 
-def _overlap_frac(mask: np.ndarray, other: np.ndarray) -> float:
-    n = int(np.count_nonzero(mask))
-    if n == 0:
-        return 0.0
-    return float(np.count_nonzero((mask > 0) & (other > 0))) / n
-
-
-def _inner_rectangles(
+def _opening_faces(
     ink: np.ndarray,
     envelope: np.ndarray,
+    roof: np.ndarray,
+    foundation: np.ndarray,
     building_h: int,
-    roof_mask: np.ndarray,
-    foundation_mask: np.ndarray,
 ) -> list[tuple[np.ndarray, float, str]]:
-    """Fill CAD window/vent frames (bounding rects), not the ink strokes themselves."""
+    """Paper holes inside walls = window/vent interiors, bounded by CAD ink."""
     h, w = ink.shape
-    lines = ((ink > 0) & (envelope > 0)).astype(np.uint8) * 255
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-    closed = cv2.morphologyEx(lines, cv2.MORPH_CLOSE, kernel)
-    contours, hierarchy = cv2.findContours(closed, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-    if hierarchy is None:
-        return []
-    hierarchy = hierarchy[0]
-    out: list[tuple[np.ndarray, float, str]] = []
+    barrier = cv2.dilate(((ink > 0) & (envelope > 0)).astype(np.uint8) * 255, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)))
+    paper = ((envelope > 0) & (barrier == 0) & (roof == 0) & (foundation == 0)).astype(np.uint8)
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(paper)
     env_area = max(int(np.count_nonzero(envelope)), 1)
-    max_win_h = max(18, int(building_h * 0.28))
-    max_win_w = max(24, int(w * 0.18))
-    max_win_area = int(env_area * 0.035)
+    out: list[tuple[np.ndarray, float, str]] = []
+    max_win_h = max(16, int(building_h * 0.30))
+    max_win_w = max(20, int(w * 0.20))
+    max_area = int(env_area * 0.028)
+    min_area = max(70, int(env_area * 0.00025))
 
-    for i, cnt in enumerate(contours):
-        x, y, bw, bh = cv2.boundingRect(cnt)
-        if bw < 10 or bh < 10:
+    for i in range(1, n):
+        area = int(stats[i, cv2.CC_STAT_AREA])
+        bw = int(stats[i, cv2.CC_STAT_WIDTH])
+        bh = int(stats[i, cv2.CC_STAT_HEIGHT])
+        x = int(stats[i, cv2.CC_STAT_LEFT])
+        y = int(stats[i, cv2.CC_STAT_TOP])
+        if area < min_area or area > max_area:
             continue
-        area = bw * bh
-        if area < 90 or area > max_win_area or bh > max_win_h or bw > max_win_w:
-            continue
-        approx = cv2.approxPolyDP(cnt, 0.04 * cv2.arcLength(cnt, True), True)
-        if len(approx) < 4:
-            continue
-        rectness = area / max(cv2.contourArea(cnt), 1)
-        if rectness < 0.55:
+        if bw < 10 or bh < 10 or bh > max_win_h or bw > max_win_w:
             continue
         aspect = bw / max(bh, 1)
-        if aspect < 0.32 or aspect > 4.2:
+        if aspect < 0.28 or aspect > 4.5:
             continue
-        pad = 1
-        if bw <= 2 * pad or bh <= 2 * pad:
+        if area / max(bw * bh, 1) < 0.60:
             continue
-        mask = np.zeros((h, w), np.uint8)
-        cv2.rectangle(mask, (x + pad, y + pad), (x + bw - pad, y + bh - pad), 255, -1)
-        mask = cv2.bitwise_and(mask, envelope)
-        if int(np.count_nonzero(mask)) < 60:
+        mask = (labels == i).astype(np.uint8) * 255
+        if _overlap_frac(mask, roof) > 0.20:
             continue
-        if _overlap_frac(mask, roof_mask) > 0.35:
-            continue
-        if _overlap_frac(mask, foundation_mask) > 0.45:
-            continue
-        roi = lines[y : y + bh, x : x + bw]
-        horiz = cv2.morphologyEx(roi, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (max(5, bw // 4), 1)))
-        vert = cv2.morphologyEx(roi, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(5, bh // 4))))
-        horiz_score = float(np.mean(horiz)) / 255.0
-        vert_score = float(np.mean(vert)) / 255.0
-        child = hierarchy[i][2]
-        n_children = 0
-        large_child = False
-        while child != -1:
-            n_children += 1
-            cx, cy, cw, ch = cv2.boundingRect(contours[child])
-            if cw >= 10 and ch >= 10 and (cw * ch) >= 0.18 * area:
-                large_child = True
-                break
-            child = hierarchy[child][0]
-        if large_child:
-            continue
-        is_small = max(bw, bh) <= 36 and 0.7 <= aspect <= 1.45
-        if is_small and horiz_score >= 0.12:
-            kind = "vent"
-            score = 0.78
-        elif n_children >= 1 or (horiz_score >= 0.04 and vert_score >= 0.04):
-            kind = "window"
-            score = 0.82
+        roi = ink[y : y + bh, x : x + bw]
+        hs = float(
+            np.mean(
+                cv2.morphologyEx(
+                    roi, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (max(4, bw // 5), 1))
+                )
+            )
+        ) / 255.0
+        small = max(bw, bh) <= 38 and 0.68 <= aspect <= 1.50
+        if small and hs >= 0.10:
+            out.append((mask, 0.84, "vent"))
         else:
-            continue
-        out.append((mask, score, kind))
-
-    # Drop openings fully contained in a larger kept opening.
-    kept: list[tuple[np.ndarray, float, str]] = []
-    boxes = [cv2.boundingRect(m) for m, _, _ in out]
-    for i, item in enumerate(out):
-        xi, yi, wi, hi = boxes[i]
-        contained = False
-        for j, other in enumerate(out):
-            if i == j or other[2] == "vent":
-                continue
-            xj, yj, wj, hj = boxes[j]
-            if wi * hi >= wj * hj:
-                continue
-            if xi >= xj and yi >= yj and xi + wi <= xj + wj and yi + hi <= yj + hj:
-                contained = True
-                break
-        if not contained:
-            kept.append(item)
-    return kept
+            out.append((mask, 0.80, "window"))
+    return out
 
 
 def perceive(bgr: np.ndarray) -> PerceiveResult:
@@ -404,44 +376,96 @@ def perceive(bgr: np.ndarray) -> PerceiveResult:
     paper = _ensure_ink_black(gray)
     ink = np.where(paper == 0, 255, 0).astype(np.uint8)
     envelope = _envelope(paper)
-    roof_mask, wall_l1, wall_l2, foundation, eave_y, floor_y, foundation_y = _geometry_from_silhouette(
-        ink, envelope
-    )
+    h, w = envelope.shape
+    top, bot = _column_profile(envelope)
+    valid = top >= 0
+    top_s = _median_smooth(_fill_missing(top), 15)
+    bot_s = _median_smooth(_fill_missing(bot), 15)
+    heights = np.where(valid, np.maximum(bot_s - top_s, 0), 0)
+    if valid.any():
+        ground = int(np.percentile(bot_s[valid], 88))
+        for x in np.flatnonzero(valid):
+            if heights[x] >= int(0.28 * max(int(heights.max()), 1)) and bot_s[x] < ground - 12:
+                envelope[int(bot_s[x]) : ground + 1, x] = 255
+        top, bot = _column_profile(envelope)
+        valid = top >= 0
+        top_s = _median_smooth(_fill_missing(top), 15)
+        bot_s = _median_smooth(_fill_missing(bot), 15)
+        heights = np.where(valid, np.maximum(bot_s - top_s, 0), 0)
+    max_h = int(heights.max()) if int(heights.max()) > 0 else 1
+    horiz, _vert = _line_maps(ink, envelope)
+
+    roof, hatch = _roof_from_hatch(horiz, envelope, top_s, heights)
+    foundation, foundation_y = _foundation(envelope, bot_s, heights, valid)
+
+    two = valid & (heights >= int(0.72 * max_h))
+    one = valid & ~two
+
+    if two.any():
+        has_roof = roof > 0
+        roof_bottom = np.where(has_roof.any(axis=0), h - 1 - np.argmax(has_roof[::-1], axis=0), 0)
+        eave_y = int(np.median(roof_bottom[two & has_roof.any(axis=0)])) if (two & has_roof.any(axis=0)).any() else int(
+            np.median(top_s[two])
+        )
+        y0 = eave_y
+        y1 = int(np.median(np.where(valid, np.maximum(0, bot_s - 4), 0)[two]))
+        wall_h = max(y1 - y0, 1)
+        floor_lo = y0 + int(wall_h * 0.28)
+        floor_hi = y0 + int(wall_h * 0.70)
+        floor_y = _peak_row(_band_ink_rows(ink, envelope, floor_lo, floor_hi), floor_lo)
+        if abs(floor_y - y0) < wall_h * 0.16:
+            floor_y = y0 + int(wall_h * 0.48)
+    else:
+        eave_y = int(np.median(top_s[valid])) if valid.any() else h // 4
+        floor_y = int(h * 0.55)
+
+    yy = np.arange(h, dtype=np.int32)[:, None]
+    envb = envelope > 0
+    two_b = two[None, :]
+    one_b = one[None, :]
+    wall = envb & (roof == 0) & (foundation == 0)
+    wall_l2 = (wall & two_b & (yy < floor_y)).astype(np.uint8) * 255
+    wall_l1 = ((wall & one_b) | (wall & two_b & (yy >= floor_y))).astype(np.uint8) * 255
+
+    ys, _ = np.where(envelope > 0)
+    building_h = int(ys.max() - ys.min()) if ys.size else h
+    openings = _opening_faces(ink, envelope, roof, foundation, building_h)
 
     geometry = {
-        "roof": roof_mask,
+        "roof": roof,
         "wall_l1": wall_l1,
         "wall_l2": wall_l2,
         "foundation": foundation,
     }
 
     regions: list[Region] = []
+    faces: list[Face] = []
     for label, mask, score in (
-        ("roof", roof_mask, 0.78),
+        ("roof", roof, 0.86),
         ("wall_l2", wall_l2, 0.74),
         ("wall_l1", wall_l1, 0.74),
-        ("foundation", foundation, 0.72),
+        ("foundation", foundation, 0.80),
     ):
         r = _region(label, mask, score, "geometry")
         if r:
             regions.append(r)
 
-    h = envelope.shape[0]
-    ys, _ = np.where(envelope > 0)
-    building_h = int(ys.max() - ys.min()) if ys.size else h
-    for mask, score, kind in _inner_rectangles(ink, envelope, building_h, roof_mask, foundation):
+    for mask, score, kind in openings:
         r = _region(kind, mask, score, "geometry")
-        if r:
+        if r and r.box:
             regions.append(r)
+            faces.append(Face(mask=mask, label=kind, score=score, box=r.box))
 
     return PerceiveResult(
         bgr=bgr,
         gray=gray,
         ink=ink,
         envelope=envelope,
-        eave_y=eave_y,
-        floor_y=floor_y,
-        foundation_y=foundation_y,
+        eave_y=int(eave_y),
+        floor_y=int(floor_y),
+        foundation_y=int(foundation_y),
         regions=regions,
         geometry=geometry,
+        faces=faces,
+        hatch=hatch,
     )

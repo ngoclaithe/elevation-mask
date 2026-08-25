@@ -93,7 +93,7 @@ def run_agent(bgr: np.ndarray, max_iters: int | None = None) -> dict:
         trace.append(
             {
                 "iter": step,
-                "issues": [i.__dict__ for i in last_issues],
+                "issues": [i.to_dict() for i in last_issues],
                 "florence_boxes": len(florence),
             }
         )
@@ -123,13 +123,14 @@ def run_agent(bgr: np.ndarray, max_iters: int | None = None) -> dict:
         "trace": trace,
         "envelope_pixels": int(np.count_nonzero(perceived.envelope)),
         "meta": {
-            "geometry": "silhouette",
+            "geometry": "cad-hatch-faces",
             "eave_y": perceived.eave_y,
             "floor_y": perceived.floor_y,
             "foundation_y": perceived.foundation_y,
             "florence_boxes": len(florence),
             "iters": len(trace),
-            "open_issues": [i.__dict__ for i in last_issues],
+            "faces": len(perceived.faces),
+            "open_issues": [i.to_dict() for i in last_issues],
             "timing": timing,
         },
     }

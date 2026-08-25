@@ -19,7 +19,14 @@ def apply_fixes(
     holes = cv2.bitwise_and(env, cv2.bitwise_not(labeled))
 
     for issue in issues:
-        if issue.kind == "coverage":
+        if issue.kind == "reclassify" and issue.label and issue.mask is not None:
+            bit = issue.mask
+            for name in list(masks.keys()):
+                if name == issue.label:
+                    masks[name] = cv2.bitwise_or(masks[name], bit)
+                else:
+                    masks[name] = cv2.bitwise_and(masks[name], cv2.bitwise_not(bit))
+        elif issue.kind == "coverage":
             for name in ("roof", "wall_l2", "wall_l1", "foundation"):
                 prior = perceived.geometry.get(name)
                 if prior is None:
@@ -29,13 +36,4 @@ def apply_fixes(
             prior = perceived.geometry.get(issue.label)
             if prior is not None:
                 masks[issue.label] = cv2.bitwise_or(masks[issue.label], prior)
-        elif issue.kind == "topology" and issue.label in {"window", "vent"}:
-            roof = perceived.geometry.get("roof", np.zeros_like(env))
-            found = perceived.geometry.get("foundation", np.zeros_like(env))
-            keep = cv2.bitwise_and(env, cv2.bitwise_not(cv2.bitwise_or(roof, found)))
-            masks[issue.label] = cv2.bitwise_and(masks[issue.label], keep)
-        elif issue.kind == "topology" and issue.label == "foundation":
-            prior = perceived.geometry.get("foundation")
-            if prior is not None:
-                masks["foundation"] = prior.copy()
     return masks

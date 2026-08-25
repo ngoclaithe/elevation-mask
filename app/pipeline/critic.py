@@ -13,6 +13,27 @@ class Issue:
     kind: str
     message: str
     label: str | None = None
+    mask: np.ndarray | None = None
+
+    def to_dict(self) -> dict:
+        return {"kind": self.kind, "message": self.message, "label": self.label}
+
+
+def _majority_label(masks: dict[str, np.ndarray], face_mask: np.ndarray) -> str | None:
+    best_name = None
+    best_n = 0
+    face = face_mask > 0
+    n_face = int(np.count_nonzero(face))
+    if n_face < 20:
+        return None
+    for name, mask in masks.items():
+        n = int(np.count_nonzero(face & (mask > 0)))
+        if n > best_n:
+            best_n = n
+            best_name = name
+    if best_n < 0.40 * n_face:
+        return None
+    return best_name
 
 
 def critique(perceived: PerceiveResult, masks: dict[str, np.ndarray]) -> list[Issue]:
@@ -23,46 +44,31 @@ def critique(perceived: PerceiveResult, masks: dict[str, np.ndarray]) -> list[Is
         issues.append(Issue("no_building", "Could not find a building envelope"))
         return issues
 
+    for face in perceived.faces:
+        current = _majority_label(masks, face.mask)
+        if current == face.label:
+            continue
+        if face.label in {"window", "vent"} and current in {"wall_l1", "wall_l2", None}:
+            issues.append(
+                Issue("reclassify", f"{face.label} face labeled {current}", face.label, face.mask)
+            )
+        elif face.label == "roof" and current in {"wall_l1", "wall_l2", None}:
+            issues.append(Issue("reclassify", f"roof hatch labeled {current}", "roof", face.mask))
+        elif face.label == "wall_l1" and current == "wall_l2":
+            issues.append(Issue("reclassify", "1-story wall marked L2", "wall_l1", face.mask))
+
     labeled = np.zeros(env.shape, dtype=bool)
-    for name, mask in masks.items():
+    for mask in masks.values():
         labeled |= mask > 0
     unlabeled = int(np.count_nonzero(env & ~labeled))
     if unlabeled / env_area > 0.03:
-        issues.append(
-            Issue(
-                "coverage",
-                f"Unlabeled envelope {unlabeled / env_area:.1%}",
-            )
-        )
+        issues.append(Issue("coverage", f"Unlabeled envelope {unlabeled / env_area:.1%}"))
 
-    if int(np.count_nonzero(masks.get("roof", np.zeros_like(perceived.envelope)))) < env_area * 0.02:
+    if int(np.count_nonzero(masks.get("roof", np.zeros_like(perceived.envelope)))) < env_area * 0.015:
         issues.append(Issue("missing", "Missing roof", "roof"))
-    if int(np.count_nonzero(masks.get("wall_l1", np.zeros_like(perceived.envelope)))) < env_area * 0.02:
+    if int(np.count_nonzero(masks.get("wall_l1", np.zeros_like(perceived.envelope)))) < env_area * 0.015:
         issues.append(Issue("missing", "Missing first-floor wall", "wall_l1"))
 
-    # Windows/vents are subtracted from walls by priority, so they must not
-    # be tested as a subset of wall masks. They should sit in the wall band.
-    for hole in ("window", "vent"):
-        m = masks.get(hole)
-        if m is None or int(np.count_nonzero(m)) == 0:
-            continue
-        roof = perceived.geometry.get("roof")
-        found = perceived.geometry.get("foundation")
-        if roof is not None and int(np.count_nonzero((m > 0) & (roof > 0))) > 0.6 * int(np.count_nonzero(m)):
-            issues.append(Issue("topology", f"{hole} mostly on roof", hole))
-        elif found is not None and int(np.count_nonzero((m > 0) & (found > 0))) > 0.6 * int(
-            np.count_nonzero(m)
-        ):
-            issues.append(Issue("topology", f"{hole} mostly on foundation", hole))
-
-    foundation = masks.get("foundation")
-    if foundation is not None and int(np.count_nonzero(foundation)):
-        ys = np.where(foundation > 0)[0]
-        env_bottom = np.where(env)[0].max() if np.any(env) else 0
-        if ys.size and abs(int(ys.max()) - int(env_bottom)) > 12:
-            issues.append(Issue("topology", "Foundation not at envelope bottom", "foundation"))
-
-    # Overlap after priority should already be 0; flag if geometry still collides.
     names = [c.name for c in CLASSES.values() if c.count_area]
     for i, a in enumerate(names):
         for b in names[i + 1 :]:

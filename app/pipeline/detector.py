@@ -54,7 +54,13 @@ def propose_boxes(bgr: np.ndarray) -> list[Region]:
         return []
 
     h, w = bgr.shape[:2]
-    views = [bgr, _thicken_cad(bgr)]
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    ink = (gray < 90).astype(np.uint8) * 255
+    ink = cv2.dilate(ink, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)))
+    thick = np.full_like(bgr, 255)
+    thick[ink > 0] = (20, 20, 20)
+    inv = cv2.cvtColor(255 - ink, cv2.COLOR_GRAY2BGR)
+    views = [bgr, thick, inv]
     regions: list[Region] = []
     try:
         for img in views:
@@ -67,9 +73,9 @@ def propose_boxes(bgr: np.ndarray) -> list[Region]:
             xyxy = res.boxes.xyxy.cpu().numpy()
             cls_ids = res.boxes.cls.cpu().numpy().astype(int)
             confs = res.boxes.conf.cpu().numpy()
-            names = res.names
+            log.info("yolo-world raw boxes=%s", int(len(xyxy)))
             for box, cid, score in zip(xyxy, cls_ids, confs):
-                raw = names.get(int(cid), "") if isinstance(names, dict) else str(names[int(cid)])
+                raw = _CLASSES[int(cid)] if 0 <= int(cid) < len(_CLASSES) else ""
                 label = canonical_label(raw)
                 if label is None:
                     continue
@@ -86,4 +92,5 @@ def propose_boxes(bgr: np.ndarray) -> list[Region]:
     except Exception:
         log.exception("YOLO-World predict failed")
         return []
+    log.info("yolo-world kept %s regions", len(regions))
     return regions

@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     max_iters: int = 3
     overlay_alpha: float = 0.38
     florence_max_side: int = 768
-    yolo_conf: float = 0.08
+    yolo_conf: float = 0.01
 
     florence_id: str = "microsoft/Florence-2-base"
     yolo_world_id: str = "yolov8s-world.pt"

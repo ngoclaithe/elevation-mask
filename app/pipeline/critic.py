@@ -46,9 +46,14 @@ def critique(perceived: PerceiveResult, masks: dict[str, np.ndarray]) -> list[Is
         m = masks.get(hole)
         if m is None or int(np.count_nonzero(m)) == 0:
             continue
-        ys = np.where(m > 0)[0]
-        if ys.size and (ys.min() < perceived.eave_y - 8 or ys.max() > perceived.foundation_y + 8):
-            issues.append(Issue("topology", f"{hole} outside wall band", hole))
+        roof = perceived.geometry.get("roof")
+        found = perceived.geometry.get("foundation")
+        if roof is not None and int(np.count_nonzero((m > 0) & (roof > 0))) > 0.6 * int(np.count_nonzero(m)):
+            issues.append(Issue("topology", f"{hole} mostly on roof", hole))
+        elif found is not None and int(np.count_nonzero((m > 0) & (found > 0))) > 0.6 * int(
+            np.count_nonzero(m)
+        ):
+            issues.append(Issue("topology", f"{hole} mostly on foundation", hole))
 
     foundation = masks.get("foundation")
     if foundation is not None and int(np.count_nonzero(foundation)):

@@ -15,7 +15,7 @@ COPY stubs ./stubs
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app/stubs \
-    ENABLE_FLORENCE=true \
+    ENABLE_FLORENCE=false \
     ENABLE_SAM=false \
     ENABLE_VL_CRITIC=false \
     JOB_DIR=/app/data/jobs

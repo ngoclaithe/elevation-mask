@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     model_cache: Path = Path("data/models")
 
     device: str = "cpu"
-    enable_florence: bool = True
+    enable_florence: bool = False
     enable_sam: bool = False
     enable_vl_critic: bool = False
     max_iters: int = 3

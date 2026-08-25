@@ -20,40 +20,22 @@ def apply_fixes(
 
     for issue in issues:
         if issue.kind == "coverage":
-            # Unlabeled pixels above eave → roof; between eave and floor → L2;
-            # between floor and foundation → L1; else foundation.
-            h = env.shape[0]
-            roof_band = np.zeros_like(holes)
-            roof_band[: perceived.eave_y] = holes[: perceived.eave_y]
-            l2_band = np.zeros_like(holes)
-            l2_band[perceived.eave_y : perceived.floor_y] = holes[perceived.eave_y : perceived.floor_y]
-            l1_band = np.zeros_like(holes)
-            l1_band[perceived.floor_y : perceived.foundation_y] = holes[
-                perceived.floor_y : perceived.foundation_y
-            ]
-            found_band = np.zeros_like(holes)
-            found_band[perceived.foundation_y : h] = holes[perceived.foundation_y : h]
-            masks["roof"] = cv2.bitwise_or(masks["roof"], roof_band)
-            masks["wall_l2"] = cv2.bitwise_or(masks["wall_l2"], l2_band)
-            masks["wall_l1"] = cv2.bitwise_or(masks["wall_l1"], l1_band)
-            masks["foundation"] = cv2.bitwise_or(masks["foundation"], found_band)
+            for name in ("roof", "wall_l2", "wall_l1", "foundation"):
+                prior = perceived.geometry.get(name)
+                if prior is None:
+                    continue
+                masks[name] = cv2.bitwise_or(masks[name], cv2.bitwise_and(holes, prior))
         elif issue.kind == "missing" and issue.label:
-            if issue.label == "roof":
-                fill = env.copy()
-                fill[perceived.eave_y :, :] = 0
-                masks["roof"] = cv2.bitwise_or(masks["roof"], fill)
-            elif issue.label == "wall_l1":
-                fill = env.copy()
-                fill[: perceived.floor_y, :] = 0
-                fill[perceived.foundation_y :, :] = 0
-                masks["wall_l1"] = cv2.bitwise_or(masks["wall_l1"], fill)
+            prior = perceived.geometry.get(issue.label)
+            if prior is not None:
+                masks[issue.label] = cv2.bitwise_or(masks[issue.label], prior)
         elif issue.kind == "topology" and issue.label in {"window", "vent"}:
-            band = env.copy()
-            band[: perceived.eave_y] = 0
-            band[perceived.foundation_y :] = 0
-            masks[issue.label] = cv2.bitwise_and(masks[issue.label], band)
+            roof = perceived.geometry.get("roof", np.zeros_like(env))
+            found = perceived.geometry.get("foundation", np.zeros_like(env))
+            keep = cv2.bitwise_and(env, cv2.bitwise_not(cv2.bitwise_or(roof, found)))
+            masks[issue.label] = cv2.bitwise_and(masks[issue.label], keep)
         elif issue.kind == "topology" and issue.label == "foundation":
-            fill = env.copy()
-            fill[: perceived.foundation_y, :] = 0
-            masks["foundation"] = fill
+            prior = perceived.geometry.get("foundation")
+            if prior is not None:
+                masks["foundation"] = prior.copy()
     return masks

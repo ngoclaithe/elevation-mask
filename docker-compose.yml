@@ -4,7 +4,7 @@ services:
     ports:
       - "8787:8080"
     environment:
-      ENABLE_FLORENCE: "true"
+      ENABLE_FLORENCE: "false"
       ENABLE_SAM: "false"
       ENABLE_VL_CRITIC: "false"
       DEVICE: cpu

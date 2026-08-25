@@ -44,6 +44,25 @@ def _fill_to_ink(mask: np.ndarray, envelope: np.ndarray, ink: np.ndarray) -> np.
     return _clip(merged, envelope)
 
 
+def resolve_priority(masks: dict[str, np.ndarray], envelope: np.ndarray | None = None) -> dict[str, np.ndarray]:
+    """Higher-priority classes punch holes in lower ones (windows stay on top of walls)."""
+    if not masks:
+        return masks
+    h, w = next(iter(masks.values())).shape[:2]
+    claimed = np.zeros((h, w), np.uint8)
+    out: dict[str, np.ndarray] = {}
+    for cls in sorted(CLASSES.values(), key=lambda c: c.priority, reverse=True):
+        mask = masks.get(cls.name)
+        if mask is None:
+            mask = np.zeros((h, w), np.uint8)
+        mask = cv2.bitwise_and(mask, cv2.bitwise_not(claimed))
+        if envelope is not None:
+            mask = cv2.bitwise_and(mask, envelope)
+        out[cls.name] = mask
+        claimed = cv2.bitwise_or(claimed, mask)
+    return out
+
+
 def snap_regions(perceived: PerceiveResult, regions: list[Region]) -> dict[str, np.ndarray]:
     h, w = perceived.envelope.shape
     stacked: dict[str, np.ndarray] = {name: np.zeros((h, w), np.uint8) for name in CLASSES}
@@ -71,18 +90,10 @@ def snap_regions(perceived: PerceiveResult, regions: list[Region]) -> dict[str, 
             claimed = cv2.bitwise_or(claimed, mask)
     leftover = cv2.bitwise_and(perceived.envelope, cv2.bitwise_not(claimed))
     if int(np.count_nonzero(leftover)):
-        roof_fill = leftover.copy()
-        roof_fill[perceived.eave_y :, :] = 0
-        l2_fill = leftover.copy()
-        l2_fill[: perceived.eave_y, :] = 0
-        l2_fill[perceived.floor_y :, :] = 0
-        l1_fill = leftover.copy()
-        l1_fill[: perceived.floor_y, :] = 0
-        l1_fill[perceived.foundation_y :, :] = 0
-        found_fill = leftover.copy()
-        found_fill[: perceived.foundation_y, :] = 0
-        out["roof"] = cv2.bitwise_or(out["roof"], roof_fill)
-        out["wall_l2"] = cv2.bitwise_or(out["wall_l2"], l2_fill)
-        out["wall_l1"] = cv2.bitwise_or(out["wall_l1"], l1_fill)
-        out["foundation"] = cv2.bitwise_or(out["foundation"], found_fill)
-    return out
+        for name in ("roof", "wall_l2", "wall_l1", "foundation"):
+            prior = perceived.geometry.get(name)
+            if prior is None:
+                continue
+            fill = cv2.bitwise_and(leftover, prior)
+            out[name] = cv2.bitwise_or(out[name], fill)
+    return resolve_priority(out, perceived.envelope)

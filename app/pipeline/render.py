@@ -4,29 +4,41 @@ import cv2
 import numpy as np
 
 from app.pipeline.classes import CLASSES
+from app.pipeline.snap import resolve_priority
 from app.settings import settings
 
 
-def solidify_mask(mask: np.ndarray) -> np.ndarray:
+def solidify_mask(mask: np.ndarray, kernel: int = 9, min_area: int | None = None) -> np.ndarray:
     """Turn speckled pixels into connected filled polygons."""
     if mask is None or int(np.count_nonzero(mask)) == 0:
         return mask if mask is not None else np.zeros((1, 1), np.uint8)
-    closed = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9)))
+    k = max(3, kernel | 1)
+    closed = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (k, k)))
     contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     out = np.zeros_like(closed)
-    min_area = max(40, int(closed.shape[0] * closed.shape[1] * 0.00015))
+    if min_area is None:
+        min_area = max(40, int(closed.shape[0] * closed.shape[1] * 0.00015))
     for cnt in contours:
         if cv2.contourArea(cnt) < min_area:
             continue
         peri = cv2.arcLength(cnt, True)
         approx = cv2.approxPolyDP(cnt, max(1.0, 0.002 * peri), True)
         cv2.drawContours(out, [approx], -1, 255, thickness=cv2.FILLED)
-    holes = cv2.morphologyEx(out, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
+    holes = cv2.morphologyEx(out, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
     return holes
 
 
-def solidify_masks(masks: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
-    return {name: solidify_mask(mask) for name, mask in masks.items()}
+def solidify_masks(masks: dict[str, np.ndarray], envelope: np.ndarray | None = None) -> dict[str, np.ndarray]:
+    out: dict[str, np.ndarray] = {}
+    for name, mask in masks.items():
+        if name in {"window", "vent", "pipe"}:
+            solidified = solidify_mask(mask, kernel=3, min_area=20)
+        else:
+            solidified = solidify_mask(mask)
+        if envelope is not None:
+            solidified = cv2.bitwise_and(solidified, envelope)
+        out[name] = solidified
+    return resolve_priority(out, envelope)
 
 
 def render_mask_layer(masks: dict[str, np.ndarray]) -> np.ndarray:
@@ -34,8 +46,8 @@ def render_mask_layer(masks: dict[str, np.ndarray]) -> np.ndarray:
     h, w = next(iter(masks.values())).shape[:2]
     layer = np.zeros((h, w, 4), np.uint8)
     alpha = int(np.clip(settings.overlay_alpha, 0.2, 0.85) * 255)
-    for name, cls in CLASSES.items():
-        mask = masks.get(name)
+    for cls in sorted(CLASSES.values(), key=lambda c: c.priority):
+        mask = masks.get(cls.name)
         if mask is None or int(np.count_nonzero(mask)) == 0:
             continue
         hit = mask > 0

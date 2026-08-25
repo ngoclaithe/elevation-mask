@@ -8,7 +8,6 @@ import numpy as np
 from app.pipeline.area import compute_areas
 from app.pipeline.critic import Issue, critique
 from app.pipeline.fixer import apply_fixes
-from app.pipeline.florence import propose_boxes
 from app.pipeline.geometry import PerceiveResult, Region, perceive
 from app.pipeline.render import composite_overlay, render_mask_layer, solidify_masks
 from app.pipeline.sam_seg import refine_regions
@@ -36,6 +35,14 @@ def _as_regions(masks: dict[str, np.ndarray]) -> list[Region]:
         for name, mask in masks.items()
         if int(np.count_nonzero(mask)) > 0
     ]
+
+
+def _florence_boxes(bgr: np.ndarray) -> list[Region]:
+    if not settings.enable_florence:
+        return []
+    from app.pipeline.florence import propose_boxes
+
+    return propose_boxes(bgr)
 
 
 def _filter_florence(regions: list[Region], perceived: PerceiveResult) -> list[Region]:
@@ -69,7 +76,7 @@ def run_agent(bgr: np.ndarray, max_iters: int | None = None) -> dict:
     t0 = time.perf_counter()
     perceived = perceive(bgr)
     t_perceive = time.perf_counter()
-    florence = _filter_florence(propose_boxes(perceived.bgr), perceived)
+    florence = _filter_florence(_florence_boxes(perceived.bgr), perceived)
     t_florence = time.perf_counter()
     merged = refine_regions(perceived.bgr, list(perceived.regions) + florence)
     t_sam = time.perf_counter()
@@ -77,11 +84,11 @@ def run_agent(bgr: np.ndarray, max_iters: int | None = None) -> dict:
 
     last_issues: list[Issue] = []
     trace: list[dict] = []
-    overlay = composite_overlay(perceived.bgr, render_mask_layer(solidify_masks(masks)))
+    overlay = composite_overlay(perceived.bgr, render_mask_layer(solidify_masks(masks, perceived.envelope)))
 
     for step in range(iters):
         last_issues = critique(perceived, masks)
-        overlay = composite_overlay(perceived.bgr, render_mask_layer(solidify_masks(masks)))
+        overlay = composite_overlay(perceived.bgr, render_mask_layer(solidify_masks(masks, perceived.envelope)))
         last_issues.extend(_vl_issues(perceived.bgr, overlay))
         trace.append(
             {
@@ -95,7 +102,7 @@ def run_agent(bgr: np.ndarray, max_iters: int | None = None) -> dict:
         masks = apply_fixes(perceived, masks, last_issues)
         masks = snap_regions(perceived, _as_regions(masks))
 
-    masks = solidify_masks(masks)
+    masks = solidify_masks(masks, perceived.envelope)
     mask_layer = render_mask_layer(masks)
     overlay = composite_overlay(bgr, mask_layer)
 
@@ -116,6 +123,7 @@ def run_agent(bgr: np.ndarray, max_iters: int | None = None) -> dict:
         "trace": trace,
         "envelope_pixels": int(np.count_nonzero(perceived.envelope)),
         "meta": {
+            "geometry": "silhouette",
             "eave_y": perceived.eave_y,
             "floor_y": perceived.floor_y,
             "foundation_y": perceived.foundation_y,

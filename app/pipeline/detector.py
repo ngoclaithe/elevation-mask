@@ -15,13 +15,10 @@ log = logging.getLogger(__name__)
 _CLASSES = [
     "window",
     "sliding window",
-    "roof",
-    "tile roof",
-    "gable",
+    "glass door",
+    "door",
     "vent",
     "louver",
-    "foundation",
-    "door",
 ]
 
 

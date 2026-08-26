@@ -44,30 +44,53 @@ def apply_fixes(
             if bit.shape[:2] != env.shape[:2]:
                 bit = cv2.resize(bit, (env.shape[1], env.shape[0]), interpolation=cv2.INTER_NEAREST)
             bit = cv2.bitwise_and(bit.astype(np.uint8), env)
-            if issue.label in masks:
+
+            if issue.label in {"window", "vent", "pipe"}:
+                # Snap to matching CAD face if available
+                snapped = np.zeros_like(env)
+                for face in perceived.faces:
+                    if int(np.count_nonzero(cv2.bitwise_and(face.mask, bit))) > 0:
+                        snapped = cv2.bitwise_or(snapped, face.mask)
+                if int(np.count_nonzero(snapped)) > 0:
+                    bit = snapped
                 masks[issue.label] = cv2.bitwise_or(masks[issue.label], bit)
                 for name in list(masks.keys()):
                     if name != issue.label:
                         masks[name] = cv2.bitwise_and(masks[name], cv2.bitwise_not(bit))
+            elif issue.label == "roof":
+                roof_prior = perceived.geometry.get("roof", np.zeros_like(env))
+                roof_bit = cv2.bitwise_and(bit, roof_prior)
+                if int(np.count_nonzero(roof_bit)) > 0:
+                    masks["roof"] = cv2.bitwise_or(masks["roof"], roof_bit)
+                    for name in list(masks.keys()):
+                        if name != "roof":
+                            masks[name] = cv2.bitwise_and(masks[name], cv2.bitwise_not(roof_bit))
             else:
-                # If label is None or 'none', restore to wall
+                # Restore to proper wall layer based on floor line
                 h, w = env.shape
                 yy = np.arange(h)[:, None]
                 two_wall = cv2.bitwise_and(bit, (yy < perceived.floor_y).astype(np.uint8) * 255)
                 one_wall = cv2.bitwise_and(bit, (yy >= perceived.floor_y).astype(np.uint8) * 255)
-                for name in list(masks.keys()):
-                    masks[name] = cv2.bitwise_and(masks[name], cv2.bitwise_not(bit))
+                for name in ("window", "vent", "pipe", "roof"):
+                    if name in masks:
+                        masks[name] = cv2.bitwise_and(masks[name], cv2.bitwise_not(bit))
                 if "wall_l2" in masks:
                     masks["wall_l2"] = cv2.bitwise_or(masks["wall_l2"], two_wall)
                 if "wall_l1" in masks:
                     masks["wall_l1"] = cv2.bitwise_or(masks["wall_l1"], one_wall)
 
         elif issue.kind == "missing":
-            if issue.mask is not None and issue.label in masks:
+            if issue.mask is not None and issue.label in {"window", "vent", "pipe"}:
                 bit = issue.mask
                 if bit.shape[:2] != env.shape[:2]:
                     bit = cv2.resize(bit, (env.shape[1], env.shape[0]), interpolation=cv2.INTER_NEAREST)
                 bit = cv2.bitwise_and(bit.astype(np.uint8), env)
+                snapped = np.zeros_like(env)
+                for face in perceived.faces:
+                    if int(np.count_nonzero(cv2.bitwise_and(face.mask, bit))) > 0:
+                        snapped = cv2.bitwise_or(snapped, face.mask)
+                if int(np.count_nonzero(snapped)) > 0:
+                    bit = snapped
                 masks[issue.label] = cv2.bitwise_or(masks[issue.label], bit)
                 for name in list(masks.keys()):
                     if name != issue.label:
@@ -78,20 +101,10 @@ def apply_fixes(
                     masks[issue.label] = cv2.bitwise_or(masks[issue.label], prior)
 
         elif issue.kind == "coverage":
-            if issue.mask is not None and issue.label in masks:
-                bit = issue.mask
-                if bit.shape[:2] != env.shape[:2]:
-                    bit = cv2.resize(bit, (env.shape[1], env.shape[0]), interpolation=cv2.INTER_NEAREST)
-                bit = cv2.bitwise_and(bit.astype(np.uint8), env)
-                masks[issue.label] = cv2.bitwise_or(masks[issue.label], bit)
-                for name in list(masks.keys()):
-                    if name != issue.label:
-                        masks[name] = cv2.bitwise_and(masks[name], cv2.bitwise_not(bit))
-            else:
-                for name in ("roof", "wall_l2", "wall_l1", "foundation"):
-                    prior = perceived.geometry.get(name)
-                    if prior is None:
-                        continue
-                    masks[name] = cv2.bitwise_or(masks[name], cv2.bitwise_and(holes, prior))
+            for name in ("roof", "wall_l2", "wall_l1", "foundation"):
+                prior = perceived.geometry.get(name)
+                if prior is None:
+                    continue
+                masks[name] = cv2.bitwise_or(masks[name], cv2.bitwise_and(holes, prior))
 
     return masks

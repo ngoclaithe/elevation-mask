@@ -95,7 +95,12 @@ def snap_regions(perceived: PerceiveResult, regions: list[Region]) -> dict[str, 
         if region.label not in stacked:
             continue
 
-        if region.source in {"yolo", "florence", "sam"} and region.label in {"window", "vent"}:
+        # Only discrete object classes can be proposed by object detectors
+        if region.source in {"yolo", "florence", "sam"}:
+            if region.label not in {"window", "vent", "pipe"}:
+                continue
+
+        if region.label in {"window", "vent"}:
             # Check overlap with true CAD opening faces
             matched_face = None
             for face in perceived.faces:

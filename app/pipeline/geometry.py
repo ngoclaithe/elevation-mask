@@ -174,7 +174,7 @@ def _roof_from_hatch(ink: np.ndarray, envelope: np.ndarray, ground_y: int) -> tu
     """Detect sloped roof tile surfaces with parallel hatching."""
     h, w = envelope.shape
     h_hatch = cv2.morphologyEx(ink & envelope, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (8, 1)))
-    roof_dense = cv2.morphologyEx(h_hatch, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (15, 5)))
+    roof_dense = cv2.morphologyEx(h_hatch, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (20, 15)))
     roof_dense = cv2.dilate(roof_dense, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)))
     
     n_r, l_r, s_r, _ = cv2.connectedComponentsWithStats((roof_dense > 0).astype(np.uint8))
@@ -184,17 +184,23 @@ def _roof_from_hatch(ink: np.ndarray, envelope: np.ndarray, ground_y: int) -> tu
         by = int(s_r[i, cv2.CC_STAT_TOP])
         bh = int(s_r[i, cv2.CC_STAT_HEIGHT])
         bw_ = int(s_r[i, cv2.CC_STAT_WIDTH])
-        if area < 300 or bw_ < 25 or bh < 12:
+        if area < 400 or bw_ < 35 or bh < 15:
             continue
         comp_mask = (l_r == i).astype(np.uint8) * 255
         h_in_comp = cv2.morphologyEx(ink & comp_mask, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (12, 1)))
-        lines_count = np.count_nonzero(np.sum(h_in_comp > 0, axis=1) > 15)
-        if lines_count >= 3 and by < 0.65 * ground_y:
-            cnts, _ = cv2.findContours(comp_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            for c in cnts:
-                if cv2.contourArea(c) > 200:
-                    cv2.drawContours(roof, [cv2.convexHull(c)], -1, 255, -1)
-                    
+        line_rows = np.where(np.sum(h_in_comp > 0, axis=1) > 15)[0]
+        if len(line_rows) >= 5 and by < 0.65 * ground_y:
+            # Check average line spacing: roof tiles have pitch < 22px
+            diffs = np.diff(line_rows)
+            valid_pitch = diffs[(diffs > 2) & (diffs < 22)]
+            if len(valid_pitch) >= 4:
+                # Fill tile region solidly ONLY within this component
+                solid_comp = cv2.morphologyEx(comp_mask, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9)))
+                cnts, _ = cv2.findContours(solid_comp, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                for c in cnts:
+                    if cv2.contourArea(c) > 200:
+                        cv2.drawContours(roof, [c], -1, 255, -1)
+                        
     roof = cv2.bitwise_and(roof, envelope)
     return roof, h_hatch
 

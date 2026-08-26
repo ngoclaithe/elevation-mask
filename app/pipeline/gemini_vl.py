@@ -47,16 +47,23 @@ Note: Coordinates in box_2d are normalized between 0 and 1000 (integers). If no 
 """
 
 
+def _prep_image(img: np.ndarray, max_side: int = 1024) -> str:
+    h, w = img.shape[:2]
+    if max(h, w) > max_side:
+        scale = max_side / float(max(h, w))
+        img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+    _, buf = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+    return base64.b64encode(buf).decode("utf-8")
+
+
 def critique_with_gemini(bgr: np.ndarray, overlay: np.ndarray) -> list[Issue]:
     api_key = settings.gemini_api_key
     if not api_key:
         return []
 
     try:
-        _, buf_orig = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
-        _, buf_over = cv2.imencode(".png", overlay)
-        orig_b64 = base64.b64encode(buf_orig).decode("utf-8")
-        over_b64 = base64.b64encode(buf_over).decode("utf-8")
+        orig_b64 = _prep_image(bgr)
+        over_b64 = _prep_image(overlay)
 
         model_name = settings.gemini_model or "gemini-2.5-flash"
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
@@ -66,7 +73,7 @@ def critique_with_gemini(bgr: np.ndarray, overlay: np.ndarray) -> list[Issue]:
                 {
                     "parts": [
                         {"inline_data": {"mime_type": "image/jpeg", "data": orig_b64}},
-                        {"inline_data": {"mime_type": "image/png", "data": over_b64}},
+                        {"inline_data": {"mime_type": "image/jpeg", "data": over_b64}},
                         {"text": _PROMPT},
                     ]
                 }
@@ -77,7 +84,7 @@ def critique_with_gemini(bgr: np.ndarray, overlay: np.ndarray) -> list[Issue]:
             },
         }
 
-        res = requests.post(url, json=payload, timeout=25)
+        res = requests.post(url, json=payload, timeout=45)
         if res.status_code != 200:
             log.warning("Gemini Critic failed with status %d: %s", res.status_code, res.text)
             return []

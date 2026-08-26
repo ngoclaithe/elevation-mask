@@ -116,7 +116,7 @@ def snap_regions(perceived: PerceiveResult, regions: list[Region]) -> dict[str, 
             if matched_face is not None:
                 snapped = matched_face.mask
             else:
-                snapped = _fill_to_ink(region.mask, perceived.envelope, perceived.ink, region.box)
+                snapped = np.zeros_like(perceived.envelope)
         elif region.label == "pipe":
             snapped = _clip(region.mask, perceived.envelope)
         else:

@@ -174,8 +174,7 @@ def _roof_from_hatch(ink: np.ndarray, envelope: np.ndarray, ground_y: int) -> tu
     """Detect sloped roof tile surfaces with parallel hatching."""
     h, w = envelope.shape
     h_hatch = cv2.morphologyEx(ink & envelope, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (8, 1)))
-    roof_dense = cv2.morphologyEx(h_hatch, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (20, 15)))
-    roof_dense = cv2.dilate(roof_dense, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)))
+    roof_dense = cv2.morphologyEx(h_hatch, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (15, 15)))
     
     n_r, l_r, s_r, _ = cv2.connectedComponentsWithStats((roof_dense > 0).astype(np.uint8))
     roof = np.zeros((h, w), np.uint8)
@@ -184,19 +183,17 @@ def _roof_from_hatch(ink: np.ndarray, envelope: np.ndarray, ground_y: int) -> tu
         by = int(s_r[i, cv2.CC_STAT_TOP])
         bh = int(s_r[i, cv2.CC_STAT_HEIGHT])
         bw_ = int(s_r[i, cv2.CC_STAT_WIDTH])
-        if area < 400 or bw_ < 35 or bh < 15:
+        if area < 500 or bw_ < 35 or bh < 15:
             continue
         comp_mask = (l_r == i).astype(np.uint8) * 255
         h_in_comp = cv2.morphologyEx(ink & comp_mask, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (12, 1)))
         line_rows = np.where(np.sum(h_in_comp > 0, axis=1) > 15)[0]
         if len(line_rows) >= 5 and by < 0.65 * ground_y:
-            # Check average line spacing: roof tiles have pitch < 22px
             diffs = np.diff(line_rows)
-            valid_pitch = diffs[(diffs > 2) & (diffs < 22)]
+            valid_pitch = diffs[(diffs > 2) & (diffs < 24)]
             if len(valid_pitch) >= 4:
-                # Fill tile region solidly ONLY within this component
-                solid_comp = cv2.morphologyEx(comp_mask, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9)))
-                cnts, _ = cv2.findContours(solid_comp, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                solid = cv2.morphologyEx(comp_mask, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (15, 15)))
+                cnts, _ = cv2.findContours(solid, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                 for c in cnts:
                     if cv2.contourArea(c) > 200:
                         cv2.drawContours(roof, [c], -1, 255, -1)
@@ -210,19 +207,25 @@ def _pipe_faces(
     envelope: np.ndarray,
     building_h: int,
 ) -> list[tuple[np.ndarray, float, str]]:
-    """Vertical downspout / pipes running along walls."""
+    """Vertical downspout / pipes running along outer walls."""
     h, w = ink.shape
-    env_area = max(int(np.count_nonzero(envelope)), 1)
-    v_pipes = cv2.morphologyEx(ink & envelope, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, 35)))
+    ys_e, xs_e = np.where(envelope > 0)
+    min_x = int(xs_e.min()) if xs_e.size else 0
+    max_x = int(xs_e.max()) if xs_e.size else w
+
+    v_pipes = cv2.morphologyEx(ink & envelope, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, 40)))
     v_pipes = cv2.dilate(v_pipes, cv2.getStructuringElement(cv2.MORPH_RECT, (4, 1)))
     n_p, l_p, s_p, _ = cv2.connectedComponentsWithStats((v_pipes > 0).astype(np.uint8))
     pipes: list[tuple[np.ndarray, float, str]] = []
     for i in range(1, n_p):
+        bx = int(s_p[i, cv2.CC_STAT_LEFT])
+        by = int(s_p[i, cv2.CC_STAT_TOP])
         bh = int(s_p[i, cv2.CC_STAT_HEIGHT])
         bw = int(s_p[i, cv2.CC_STAT_WIDTH])
-        area = int(s_p[i, cv2.CC_STAT_AREA])
-        if bh >= 45 and bw <= 18 and bh / max(bw, 1) >= 4.0 and area < 0.015 * env_area:
-            mask = (l_p == i).astype(np.uint8) * 255
+        # Only true outer downspouts, excluding 1px facade panel grooves
+        if bh >= 60 and bw <= 16 and (bx > max_x - 140 or bx < min_x + 90):
+            mask = np.zeros((h, w), np.uint8)
+            cv2.rectangle(mask, (bx - 2, by), (bx + bw + 2, by + bh), 255, -1)
             mask = cv2.bitwise_and(mask, envelope)
             pipes.append((mask, 0.75, "pipe"))
     return pipes
@@ -240,10 +243,14 @@ def _opening_faces(
     
     n_w, l_w, s_w, _ = cv2.connectedComponentsWithStats(paper_holes)
     env_area = max(int(np.count_nonzero(envelope)), 1)
-    out: list[tuple[np.ndarray, float, str]] = []
+    
+    raw_wins = np.zeros((h, w), np.uint8)
+    raw_vents = np.zeros((h, w), np.uint8)
 
     for i in range(1, n_w):
         area = int(s_w[i, cv2.CC_STAT_AREA])
+        bx = int(s_w[i, cv2.CC_STAT_LEFT])
+        by = int(s_w[i, cv2.CC_STAT_TOP])
         bw_ = int(s_w[i, cv2.CC_STAT_WIDTH])
         bh_ = int(s_w[i, cv2.CC_STAT_HEIGHT])
         
@@ -252,12 +259,31 @@ def _opening_faces(
         aspect = bw_ / max(bh_, 1)
         rect_ratio = area / max(bw_ * bh_, 1)
         
-        if 0.18 <= aspect <= 5.5 and rect_ratio >= 0.55:
-            mask = (l_w == i).astype(np.uint8) * 255
-            if 30 <= area <= 500 and max(bw_, bh_) <= 40 and 0.6 <= aspect <= 1.6:
-                out.append((mask, 0.88, "vent"))
-            elif 500 < area <= 0.035 * env_area and bh_ >= 15 and bw_ >= 12:
-                out.append((mask, 0.85, "window"))
+        if 0.20 <= aspect <= 5.0 and rect_ratio >= 0.50:
+            # Check internal ink strokes (windows have mullions/frames; blank walls do not)
+            inner_ink = np.count_nonzero(ink[by:by+bh_, bx:bx+bw_])
+            if 30 <= area <= 600 and max(bw_, bh_) <= 45 and 0.5 <= aspect <= 1.8:
+                cv2.rectangle(raw_vents, (max(0, bx - 2), max(0, by - 2)), (min(w, bx + bw_ + 2), min(h, by + bh_ + 2)), 255, -1)
+            elif 500 < area <= 0.04 * env_area and 15 <= bh_ <= 115 and 15 <= bw_ <= 260 and inner_ink > 25:
+                cv2.rectangle(raw_wins, (max(0, bx - 3), max(0, by - 3)), (min(w, bx + bw_ + 3), min(h, by + bh_ + 3)), 255, -1)
+
+    # Merge neighboring window panes into solid window units
+    raw_wins = cv2.morphologyEx(raw_wins, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (15, 15)))
+    raw_wins = cv2.bitwise_and(raw_wins, envelope)
+    raw_vents = cv2.bitwise_and(raw_vents, cv2.bitwise_not(raw_wins))
+    raw_vents = cv2.bitwise_and(raw_vents, envelope)
+
+    out: list[tuple[np.ndarray, float, str]] = []
+    n_v, l_v, _, _ = cv2.connectedComponentsWithStats(raw_vents)
+    for i in range(1, n_v):
+        mask = (l_v == i).astype(np.uint8) * 255
+        out.append((mask, 0.88, "vent"))
+
+    n_win, l_win, _, _ = cv2.connectedComponentsWithStats(raw_wins)
+    for i in range(1, n_win):
+        mask = (l_win == i).astype(np.uint8) * 255
+        out.append((mask, 0.85, "window"))
+
     return out
 
 

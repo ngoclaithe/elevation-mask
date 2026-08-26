@@ -44,8 +44,9 @@ def _thicken_cad(bgr: np.ndarray) -> np.ndarray:
     return out
 
 
-def propose_boxes(bgr: np.ndarray) -> list[Region]:
-    if not settings.enable_yolo_world:
+def propose_boxes(bgr: np.ndarray, enabled: bool | None = None) -> list[Region]:
+    is_enabled = settings.enable_yolo_world if enabled is None else enabled
+    if not is_enabled:
         return []
     try:
         model = _load()
@@ -54,11 +55,9 @@ def propose_boxes(bgr: np.ndarray) -> list[Region]:
         return []
 
     h, w = bgr.shape[:2]
+    thick = _thicken_cad(bgr)
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
     ink = (gray < 90).astype(np.uint8) * 255
-    ink = cv2.dilate(ink, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)))
-    thick = np.full_like(bgr, 255)
-    thick[ink > 0] = (20, 20, 20)
     inv = cv2.cvtColor(255 - ink, cv2.COLOR_GRAY2BGR)
     views = [bgr, thick, inv]
     regions: list[Region] = []

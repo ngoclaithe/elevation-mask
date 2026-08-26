@@ -39,8 +39,6 @@ def _fill_to_ink(mask: np.ndarray, envelope: np.ndarray, ink: np.ndarray) -> np.
     merged_area = int(np.count_nonzero(merged))
     if seed_area > 0 and merged_area > seed_area * 8:
         return _clip(seed, envelope)
-    _ = blocked
-    _ = (h, w)
     return _clip(merged, envelope)
 
 
@@ -84,10 +82,7 @@ def snap_regions(perceived: PerceiveResult, regions: list[Region]) -> dict[str, 
         mask = cv2.bitwise_and(stacked[cls.name], cv2.bitwise_not(claimed))
         mask = cv2.bitwise_and(mask, perceived.envelope)
         out[cls.name] = mask
-        if cls.name in {"window", "vent"}:
-            claimed = cv2.bitwise_or(claimed, mask)
-        else:
-            claimed = cv2.bitwise_or(claimed, mask)
+        claimed = cv2.bitwise_or(claimed, mask)
     leftover = cv2.bitwise_and(perceived.envelope, cv2.bitwise_not(claimed))
     if int(np.count_nonzero(leftover)):
         detector_labels = {r.label for r in regions if r.source == "yolo"}

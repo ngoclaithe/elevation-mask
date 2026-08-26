@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import json
 import logging
+from functools import lru_cache
+
+import numpy as np
 
 from app.pipeline.critic import Issue
+from app.settings import settings
 
 log = logging.getLogger(__name__)
 
@@ -15,19 +19,30 @@ Return JSON only: {"issues":[{"kind":"coverage|missing|topology|overlap","messag
 If the overlay looks correct, return {"issues":[]}."""
 
 
-def critique_overlay(bgr: np.ndarray, overlay: np.ndarray) -> list[Issue]:
-    from PIL import Image
-    from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+@lru_cache(maxsize=1)
+def _load():
     import torch
-
-    from app.settings import settings
+    from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
     device = torch.device(settings.device)
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         settings.vl_model,
         torch_dtype=torch.float32,
     ).to(device)
+    model.eval()
     processor = AutoProcessor.from_pretrained(settings.vl_model)
+    return model, processor, device
+
+
+def critique_overlay(bgr: np.ndarray, overlay: np.ndarray) -> list[Issue]:
+    from PIL import Image
+    import torch
+
+    try:
+        model, processor, device = _load()
+    except Exception:
+        log.exception("Qwen-VL unavailable")
+        return []
 
     orig = Image.fromarray(bgr[:, :, ::-1])
     over = Image.fromarray(overlay[:, :, ::-1])
@@ -61,3 +76,4 @@ def critique_overlay(bgr: np.ndarray, overlay: np.ndarray) -> list[Issue]:
             )
         )
     return issues
+

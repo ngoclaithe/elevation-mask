@@ -18,8 +18,9 @@ def _load():
     return SAM(settings.sam_weights)
 
 
-def refine_regions(bgr: np.ndarray, regions: list[Region]) -> list[Region]:
-    if not settings.enable_sam:
+def refine_regions(bgr: np.ndarray, regions: list[Region], enabled: bool | None = None) -> list[Region]:
+    is_enabled = settings.enable_sam if enabled is None else enabled
+    if not is_enabled:
         return regions
     boxes = [r for r in regions if r.box and r.source in {"florence", "yolo"}]
     if not boxes:

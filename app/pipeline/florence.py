@@ -45,8 +45,9 @@ def _load():
     return model, processor, device
 
 
-def propose_boxes(bgr: np.ndarray) -> list[Region]:
-    if not settings.enable_florence:
+def propose_boxes(bgr: np.ndarray, enabled: bool | None = None) -> list[Region]:
+    is_enabled = settings.enable_florence if enabled is None else enabled
+    if not is_enabled:
         return []
     try:
         import torch

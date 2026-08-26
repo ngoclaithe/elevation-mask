@@ -41,15 +41,14 @@ def _run_job(
     store.write_meta(job_id, {"status": "running"})
     try:
         with _run_lock:
-            if enable_florence is not None:
-                settings.enable_florence = enable_florence
-            if enable_yolo_world is not None:
-                settings.enable_yolo_world = enable_yolo_world
-            if enable_sam is not None:
-                settings.enable_sam = enable_sam
-            if enable_vl_critic is not None:
-                settings.enable_vl_critic = enable_vl_critic
-            result = run_agent(bgr, max_iters=max_iters)
+            result = run_agent(
+                bgr,
+                max_iters=max_iters,
+                enable_florence=enable_florence,
+                enable_yolo_world=enable_yolo_world,
+                enable_sam=enable_sam,
+                enable_vl_critic=enable_vl_critic,
+            )
         if scale_mm_per_px:
             from app.pipeline.area import compute_areas
             from app.pipeline.geometry import perceive
@@ -150,6 +149,18 @@ def get_source(job_id: str) -> FileResponse:
     if path is None:
         raise HTTPException(404, "Source not ready")
     return FileResponse(path, media_type="image/png")
+
+
+@router.get("/v1/jobs/{job_id}/masks")
+def list_job_masks(job_id: str) -> dict[str, str]:
+    meta = store.get(job_id)
+    if not meta:
+        raise HTTPException(404, "Job not found")
+    return {
+        name: f"/v1/jobs/{job_id}/masks/{name}"
+        for name in CLASSES
+        if store.file(job_id, f"masks/{name}.png") is not None
+    }
 
 
 @router.get("/v1/jobs/{job_id}/masks/{name}")

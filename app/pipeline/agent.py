@@ -18,8 +18,9 @@ from app.settings import settings
 log = logging.getLogger(__name__)
 
 
-def _vl_issues(bgr: np.ndarray, overlay: np.ndarray) -> list[Issue]:
-    if not settings.enable_vl_critic:
+def _vl_issues(bgr: np.ndarray, overlay: np.ndarray, enabled: bool | None = None) -> list[Issue]:
+    is_enabled = settings.enable_vl_critic if enabled is None else enabled
+    if not is_enabled:
         return []
     try:
         from app.pipeline.qwen_vl import critique_overlay
@@ -71,14 +72,30 @@ def _filter_detections(regions: list[Region], perceived: PerceiveResult) -> list
     return kept
 
 
-def run_agent(bgr: np.ndarray, max_iters: int | None = None) -> dict:
+def run_agent(
+    bgr: np.ndarray,
+    max_iters: int | None = None,
+    enable_florence: bool | None = None,
+    enable_yolo_world: bool | None = None,
+    enable_sam: bool | None = None,
+    enable_vl_critic: bool | None = None,
+) -> dict:
     iters = max_iters if max_iters is not None else settings.max_iters
     t0 = time.perf_counter()
     perceived = perceive(bgr)
     t_perceive = time.perf_counter()
-    detections = _filter_detections(propose_boxes(perceived.bgr), perceived)
+
+    proposed: list[Region] = []
+    proposed.extend(propose_boxes(perceived.bgr, enabled=enable_yolo_world))
+    is_florence = settings.enable_florence if enable_florence is None else enable_florence
+    if is_florence:
+        from app.pipeline.florence import propose_boxes as florence_propose
+
+        proposed.extend(florence_propose(perceived.bgr, enabled=True))
+
+    detections = _filter_detections(proposed, perceived)
     t_detect = time.perf_counter()
-    merged = refine_regions(perceived.bgr, list(perceived.regions) + detections)
+    merged = refine_regions(perceived.bgr, list(perceived.regions) + detections, enabled=enable_sam)
     t_sam = time.perf_counter()
     masks = snap_regions(perceived, merged)
 
@@ -89,7 +106,7 @@ def run_agent(bgr: np.ndarray, max_iters: int | None = None) -> dict:
     for step in range(iters):
         last_issues = critique(perceived, masks)
         overlay = composite_overlay(perceived.bgr, render_mask_layer(solidify_masks(masks, perceived.envelope)))
-        last_issues.extend(_vl_issues(perceived.bgr, overlay))
+        last_issues.extend(_vl_issues(perceived.bgr, overlay, enabled=enable_vl_critic))
         trace.append(
             {
                 "iter": step,
@@ -115,6 +132,8 @@ def run_agent(bgr: np.ndarray, max_iters: int | None = None) -> dict:
         "total_ms": round((t_end - t0) * 1000),
     }
     log.info("agent timing %s detector=%s", timing, len(detections))
+    is_yolo = settings.enable_yolo_world if enable_yolo_world is None else enable_yolo_world
+    detector_name = "yolo-world" if is_yolo else ("florence" if is_florence else "none")
     return {
         "masks": masks,
         "mask_layer": mask_layer,
@@ -123,7 +142,7 @@ def run_agent(bgr: np.ndarray, max_iters: int | None = None) -> dict:
         "trace": trace,
         "envelope_pixels": int(np.count_nonzero(perceived.envelope)),
         "meta": {
-            "detector": "yolo-world" if settings.enable_yolo_world else "none",
+            "detector": detector_name,
             "geometry": "leftover-prior",
             "eave_y": perceived.eave_y,
             "floor_y": perceived.floor_y,

@@ -40,7 +40,10 @@ def apply_fixes(
                     masks["wall_l1"] = cv2.bitwise_or(masks["wall_l1"], one_wall)
 
         elif issue.kind in {"wrong_class", "reclassify", "leak"} and issue.mask is not None:
-            bit = cv2.bitwise_and(issue.mask, env)
+            bit = issue.mask
+            if bit.shape[:2] != env.shape[:2]:
+                bit = cv2.resize(bit, (env.shape[1], env.shape[0]), interpolation=cv2.INTER_NEAREST)
+            bit = cv2.bitwise_and(bit.astype(np.uint8), env)
             if issue.label in masks:
                 masks[issue.label] = cv2.bitwise_or(masks[issue.label], bit)
                 for name in list(masks.keys()):
@@ -61,7 +64,10 @@ def apply_fixes(
 
         elif issue.kind == "missing":
             if issue.mask is not None and issue.label in masks:
-                bit = cv2.bitwise_and(issue.mask, env)
+                bit = issue.mask
+                if bit.shape[:2] != env.shape[:2]:
+                    bit = cv2.resize(bit, (env.shape[1], env.shape[0]), interpolation=cv2.INTER_NEAREST)
+                bit = cv2.bitwise_and(bit.astype(np.uint8), env)
                 masks[issue.label] = cv2.bitwise_or(masks[issue.label], bit)
                 for name in list(masks.keys()):
                     if name != issue.label:
@@ -73,7 +79,10 @@ def apply_fixes(
 
         elif issue.kind == "coverage":
             if issue.mask is not None and issue.label in masks:
-                bit = cv2.bitwise_and(issue.mask, env)
+                bit = issue.mask
+                if bit.shape[:2] != env.shape[:2]:
+                    bit = cv2.resize(bit, (env.shape[1], env.shape[0]), interpolation=cv2.INTER_NEAREST)
+                bit = cv2.bitwise_and(bit.astype(np.uint8), env)
                 masks[issue.label] = cv2.bitwise_or(masks[issue.label], bit)
                 for name in list(masks.keys()):
                     if name != issue.label:

@@ -22,6 +22,19 @@ def _vl_issues(bgr: np.ndarray, overlay: np.ndarray, enabled: bool | None = None
     is_enabled = settings.enable_vl_critic if enabled is None else enabled
     if not is_enabled:
         return []
+
+    # 1. Primary: High-speed Gemini Multimodal Critic
+    if settings.gemini_api_key:
+        try:
+            from app.pipeline.gemini_vl import critique_with_gemini
+
+            issues = critique_with_gemini(bgr, overlay)
+            if issues or issues == []:
+                return issues
+        except Exception:
+            log.exception("Gemini critic failed")
+
+    # 2. Fallback: Local Qwen-VL if configured
     try:
         from app.pipeline.qwen_vl import critique_overlay
 

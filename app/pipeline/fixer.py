@@ -39,24 +39,50 @@ def apply_fixes(
                 if "wall_l1" in masks:
                     masks["wall_l1"] = cv2.bitwise_or(masks["wall_l1"], one_wall)
 
-        elif issue.kind == "reclassify" and issue.label and issue.mask is not None:
-            bit = issue.mask
-            for name in list(masks.keys()):
-                if name == issue.label:
-                    masks[name] = cv2.bitwise_or(masks[name], bit)
-                else:
+        elif issue.kind in {"wrong_class", "reclassify", "leak"} and issue.mask is not None:
+            bit = cv2.bitwise_and(issue.mask, env)
+            if issue.label in masks:
+                masks[issue.label] = cv2.bitwise_or(masks[issue.label], bit)
+                for name in list(masks.keys()):
+                    if name != issue.label:
+                        masks[name] = cv2.bitwise_and(masks[name], cv2.bitwise_not(bit))
+            else:
+                # If label is None or 'none', restore to wall
+                h, w = env.shape
+                yy = np.arange(h)[:, None]
+                two_wall = cv2.bitwise_and(bit, (yy < perceived.floor_y).astype(np.uint8) * 255)
+                one_wall = cv2.bitwise_and(bit, (yy >= perceived.floor_y).astype(np.uint8) * 255)
+                for name in list(masks.keys()):
                     masks[name] = cv2.bitwise_and(masks[name], cv2.bitwise_not(bit))
+                if "wall_l2" in masks:
+                    masks["wall_l2"] = cv2.bitwise_or(masks["wall_l2"], two_wall)
+                if "wall_l1" in masks:
+                    masks["wall_l1"] = cv2.bitwise_or(masks["wall_l1"], one_wall)
+
+        elif issue.kind == "missing":
+            if issue.mask is not None and issue.label in masks:
+                bit = cv2.bitwise_and(issue.mask, env)
+                masks[issue.label] = cv2.bitwise_or(masks[issue.label], bit)
+                for name in list(masks.keys()):
+                    if name != issue.label:
+                        masks[name] = cv2.bitwise_and(masks[name], cv2.bitwise_not(bit))
+            elif issue.label:
+                prior = perceived.geometry.get(issue.label)
+                if prior is not None:
+                    masks[issue.label] = cv2.bitwise_or(masks[issue.label], prior)
 
         elif issue.kind == "coverage":
-            for name in ("roof", "wall_l2", "wall_l1", "foundation"):
-                prior = perceived.geometry.get(name)
-                if prior is None:
-                    continue
-                masks[name] = cv2.bitwise_or(masks[name], cv2.bitwise_and(holes, prior))
-
-        elif issue.kind == "missing" and issue.label:
-            prior = perceived.geometry.get(issue.label)
-            if prior is not None:
-                masks[issue.label] = cv2.bitwise_or(masks[issue.label], prior)
+            if issue.mask is not None and issue.label in masks:
+                bit = cv2.bitwise_and(issue.mask, env)
+                masks[issue.label] = cv2.bitwise_or(masks[issue.label], bit)
+                for name in list(masks.keys()):
+                    if name != issue.label:
+                        masks[name] = cv2.bitwise_and(masks[name], cv2.bitwise_not(bit))
+            else:
+                for name in ("roof", "wall_l2", "wall_l1", "foundation"):
+                    prior = perceived.geometry.get(name)
+                    if prior is None:
+                        continue
+                    masks[name] = cv2.bitwise_or(masks[name], cv2.bitwise_and(holes, prior))
 
     return masks

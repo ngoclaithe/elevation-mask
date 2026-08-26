@@ -3,11 +3,13 @@ services:
     build: .
     ports:
       - "8787:8080"
+    env_file:
+      - .env
     environment:
       ENABLE_FLORENCE: "false"
       ENABLE_YOLO_WORLD: "true"
       ENABLE_SAM: "false"
-      ENABLE_VL_CRITIC: "false"
+      ENABLE_VL_CRITIC: "true"
       DEVICE: cpu
       PYTHONPATH: /app/stubs
       YOLO_CONFIG_DIR: /root/.cache/Ultralytics

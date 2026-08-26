@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     yolo_world_id: str = "yolov8s-world.pt"
     sam_weights: str = "sam2.1_t.pt"
     vl_model: str = "Qwen/Qwen2.5-VL-3B-Instruct"
+    gemini_api_key: str | None = None
+    gemini_model: str = "gemini-2.5-flash"
 
 
 settings = Settings()

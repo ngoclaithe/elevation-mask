@@ -10,12 +10,12 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-API = "https://evomask.khilegend.shop"
-IMAGES = [
-    ROOT / "image_1.jpg",
-    ROOT / "image_2.jpeg",
-    ROOT / "image_3.png",
-]
+API = "http://100.104.138.69:8787"
+SAMPLES_DIR = ROOT / "samples"
+IMAGES = sorted([
+    p for p in SAMPLES_DIR.iterdir()
+    if p.suffix.lower() in {".jpg", ".jpeg", ".png"}
+]) if SAMPLES_DIR.exists() else []
 OUT = ROOT / "output" / "api-test"
 POLL_SEC = 3
 TIMEOUT_SEC = 600

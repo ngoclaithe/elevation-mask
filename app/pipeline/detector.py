@@ -72,7 +72,6 @@ def propose_boxes(bgr: np.ndarray, enabled: bool | None = None) -> list[Region]:
             xyxy = res.boxes.xyxy.cpu().numpy()
             cls_ids = res.boxes.cls.cpu().numpy().astype(int)
             confs = res.boxes.conf.cpu().numpy()
-            log.info("yolo-world raw boxes=%s", int(len(xyxy)))
             for box, cid, score in zip(xyxy, cls_ids, confs):
                 raw = _CLASSES[int(cid)] if 0 <= int(cid) < len(_CLASSES) else ""
                 label = canonical_label(raw)
@@ -81,7 +80,10 @@ def propose_boxes(bgr: np.ndarray, enabled: bool | None = None) -> list[Region]:
                 x1, y1, x2, y2 = [int(round(v)) for v in box]
                 x1, y1 = max(0, x1), max(0, y1)
                 x2, y2 = min(w - 1, x2), min(h - 1, y2)
-                if x2 - x1 < 8 or y2 - y1 < 8:
+                bw, bh = x2 - x1, y2 - y1
+                if bw < 10 or bh < 10:
+                    continue
+                if label in {"window", "vent"} and (bw > 0.35 * w or bh > 0.40 * h):
                     continue
                 mask = np.zeros((h, w), np.uint8)
                 cv2.rectangle(mask, (x1, y1), (x2, y2), 255, -1)

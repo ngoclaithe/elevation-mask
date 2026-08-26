@@ -313,6 +313,41 @@ def _region(label: str, mask: np.ndarray, score: float, source: str) -> Region |
     return Region(label=label, mask=mask, score=score, source=source, box=_box(mask))
 
 
+def _pipe_faces(
+    ink: np.ndarray,
+    envelope: np.ndarray,
+    roof: np.ndarray,
+    foundation: np.ndarray,
+    building_h: int,
+) -> list[tuple[np.ndarray, float, str]]:
+    """Vertical downspout / pipes running along walls."""
+    h, w = ink.shape
+    env_area = max(int(np.count_nonzero(envelope)), 1)
+    vert = cv2.morphologyEx(
+        ink & envelope,
+        cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(24, building_h // 20))),
+    )
+    vert = cv2.dilate(vert, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 1)))
+    n, labels, stats, _ = cv2.connectedComponentsWithStats((vert > 0).astype(np.uint8))
+    pipes: list[tuple[np.ndarray, float, str]] = []
+    for i in range(1, n):
+        bh = int(stats[i, cv2.CC_STAT_HEIGHT])
+        bw = int(stats[i, cv2.CC_STAT_WIDTH])
+        area = int(stats[i, cv2.CC_STAT_AREA])
+        if bh < max(28, int(building_h * 0.12)) or bw > 22 or bw < 2:
+            continue
+        if bh / max(bw, 1) < 3.5:
+            continue
+        if area > 0.015 * env_area:
+            continue
+        mask = (labels == i).astype(np.uint8) * 255
+        mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 1)))
+        mask = cv2.bitwise_and(mask, envelope)
+        pipes.append((mask, 0.75, "pipe"))
+    return pipes
+
+
 def _opening_faces(
     ink: np.ndarray,
     envelope: np.ndarray,
@@ -327,10 +362,10 @@ def _opening_faces(
     n, labels, stats, _ = cv2.connectedComponentsWithStats(paper)
     env_area = max(int(np.count_nonzero(envelope)), 1)
     out: list[tuple[np.ndarray, float, str]] = []
-    max_win_h = max(16, int(building_h * 0.30))
-    max_win_w = max(20, int(w * 0.20))
-    max_area = int(env_area * 0.028)
-    min_area = max(70, int(env_area * 0.00025))
+    max_win_h = max(16, int(building_h * 0.32))
+    max_win_w = max(20, int(w * 0.22))
+    max_area = int(env_area * 0.035)
+    min_area = max(50, int(env_area * 0.0002))
 
     for i in range(1, n):
         area = int(stats[i, cv2.CC_STAT_AREA])
@@ -340,29 +375,29 @@ def _opening_faces(
         y = int(stats[i, cv2.CC_STAT_TOP])
         if area < min_area or area > max_area:
             continue
-        if bw < 10 or bh < 10 or bh > max_win_h or bw > max_win_w:
+        if bw < 8 or bh < 8 or bh > max_win_h or bw > max_win_w:
             continue
         aspect = bw / max(bh, 1)
-        if aspect < 0.28 or aspect > 4.5:
+        if aspect < 0.22 or aspect > 5.0:
             continue
-        if area / max(bw * bh, 1) < 0.60:
+        if area / max(bw * bh, 1) < 0.50:
             continue
         mask = (labels == i).astype(np.uint8) * 255
-        if _overlap_frac(mask, roof) > 0.20:
+        if _overlap_frac(mask, roof) > 0.15:
             continue
         roi = ink[y : y + bh, x : x + bw]
         hs = float(
             np.mean(
                 cv2.morphologyEx(
-                    roi, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (max(4, bw // 5), 1))
+                    roi, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (max(4, bw // 4), 1))
                 )
             )
         ) / 255.0
-        small = max(bw, bh) <= 38 and 0.68 <= aspect <= 1.50
-        if small and hs >= 0.10:
-            out.append((mask, 0.84, "vent"))
+        small = max(bw, bh) <= 45 and 0.60 <= aspect <= 1.65
+        if small and hs >= 0.06:
+            out.append((mask, 0.85, "vent"))
         else:
-            out.append((mask, 0.80, "window"))
+            out.append((mask, 0.82, "window"))
     return out
 
 
@@ -398,7 +433,7 @@ def perceive(bgr: np.ndarray) -> PerceiveResult:
     roof, hatch = _roof_from_hatch(horiz, envelope, top_s, heights)
     foundation, foundation_y = _foundation(envelope, bot_s, heights, valid)
 
-    two = valid & (heights >= int(0.72 * max_h))
+    two = valid & (heights >= int(0.68 * max_h))
     one = valid & ~two
 
     if two.any():
@@ -410,11 +445,11 @@ def perceive(bgr: np.ndarray) -> PerceiveResult:
         y0 = eave_y
         y1 = int(np.median(np.where(valid, np.maximum(0, bot_s - 4), 0)[two]))
         wall_h = max(y1 - y0, 1)
-        floor_lo = y0 + int(wall_h * 0.28)
-        floor_hi = y0 + int(wall_h * 0.70)
+        floor_lo = y0 + int(wall_h * 0.32)
+        floor_hi = y0 + int(wall_h * 0.68)
         floor_y = _peak_row(_band_ink_rows(ink, envelope, floor_lo, floor_hi), floor_lo)
-        if abs(floor_y - y0) < wall_h * 0.16:
-            floor_y = y0 + int(wall_h * 0.48)
+        if abs(floor_y - y0) < wall_h * 0.16 or abs(floor_y - y1) < wall_h * 0.16:
+            floor_y = y0 + int(wall_h * 0.50)
     else:
         eave_y = int(np.median(top_s[valid])) if valid.any() else h // 4
         floor_y = int(h * 0.55)
@@ -430,6 +465,7 @@ def perceive(bgr: np.ndarray) -> PerceiveResult:
     ys, _ = np.where(envelope > 0)
     building_h = int(ys.max() - ys.min()) if ys.size else h
     openings = _opening_faces(ink, envelope, roof, foundation, building_h)
+    pipes = _pipe_faces(ink, envelope, roof, foundation, building_h)
 
     geometry = {
         "roof": roof,
@@ -440,7 +476,7 @@ def perceive(bgr: np.ndarray) -> PerceiveResult:
 
     regions: list[Region] = []
     faces: list[Face] = []
-    for mask, score, kind in openings:
+    for mask, score, kind in openings + pipes:
         r = _region(kind, mask, score, "geometry")
         if r and r.box:
             regions.append(r)

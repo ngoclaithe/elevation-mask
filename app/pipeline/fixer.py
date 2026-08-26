@@ -19,21 +19,44 @@ def apply_fixes(
     holes = cv2.bitwise_and(env, cv2.bitwise_not(labeled))
 
     for issue in issues:
-        if issue.kind == "reclassify" and issue.label and issue.mask is not None:
+        if issue.kind == "window_overgrowth":
+            # Reclaim bloated window areas and reset to true CAD opening faces
+            true_windows = np.zeros_like(env)
+            for face in perceived.faces:
+                if face.label == "window":
+                    true_windows = cv2.bitwise_or(true_windows, face.mask)
+            bloat = cv2.bitwise_and(masks.get("window", np.zeros_like(env)), cv2.bitwise_not(true_windows))
+            masks["window"] = true_windows
+
+            # Reassign bloated area to corresponding wall layer
+            if int(np.count_nonzero(bloat)) > 0:
+                h, w = env.shape
+                yy = np.arange(h)[:, None]
+                two_wall = cv2.bitwise_and(bloat, (yy < perceived.floor_y).astype(np.uint8) * 255)
+                one_wall = cv2.bitwise_and(bloat, (yy >= perceived.floor_y).astype(np.uint8) * 255)
+                if "wall_l2" in masks:
+                    masks["wall_l2"] = cv2.bitwise_or(masks["wall_l2"], two_wall)
+                if "wall_l1" in masks:
+                    masks["wall_l1"] = cv2.bitwise_or(masks["wall_l1"], one_wall)
+
+        elif issue.kind == "reclassify" and issue.label and issue.mask is not None:
             bit = issue.mask
             for name in list(masks.keys()):
                 if name == issue.label:
                     masks[name] = cv2.bitwise_or(masks[name], bit)
                 else:
                     masks[name] = cv2.bitwise_and(masks[name], cv2.bitwise_not(bit))
+
         elif issue.kind == "coverage":
             for name in ("roof", "wall_l2", "wall_l1", "foundation"):
                 prior = perceived.geometry.get(name)
                 if prior is None:
                     continue
                 masks[name] = cv2.bitwise_or(masks[name], cv2.bitwise_and(holes, prior))
+
         elif issue.kind == "missing" and issue.label:
             prior = perceived.geometry.get(issue.label)
             if prior is not None:
                 masks[issue.label] = cv2.bitwise_or(masks[issue.label], prior)
+
     return masks

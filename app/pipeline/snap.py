@@ -11,35 +11,59 @@ def _clip(mask: np.ndarray, envelope: np.ndarray) -> np.ndarray:
     return cv2.bitwise_and(mask, envelope)
 
 
-def _fill_to_ink(mask: np.ndarray, envelope: np.ndarray, ink: np.ndarray) -> np.ndarray:
-    """Expand a blob until it hits CAD ink, staying inside the envelope."""
+def _fill_to_ink(mask: np.ndarray, envelope: np.ndarray, ink: np.ndarray, box: tuple[int, int, int, int] | None = None) -> np.ndarray:
+    """Expand a detection inside its local bounding box up to sealed CAD ink lines."""
     h, w = mask.shape
     seed = mask.copy()
-    if int(np.count_nonzero(seed)) == 0:
+    seed_area = int(np.count_nonzero(seed))
+    if seed_area == 0:
         return seed
-    blocked = ((ink > 0) | (envelope == 0)).astype(np.uint8) * 255
-    # Walk from mask centroid via flood on non-ink paper, then keep only
-    # the connected paper component overlapping the original mask a lot.
-    paper = np.where((envelope > 0) & (ink == 0), 255, 0).astype(np.uint8)
-    n, labels = cv2.connectedComponents(paper)
-    best = seed
+
+    env_area = max(int(np.count_nonzero(envelope)), 1)
+    max_allowed = min(int(max(seed_area * 1.4, 200)), int(0.045 * env_area))
+
+    # Determine bounding ROI with a small margin
+    if box is not None:
+        bx1, by1, bx2, by2 = box
+    else:
+        ys, xs = np.where(seed > 0)
+        bx1, bx2 = int(xs.min()), int(xs.max())
+        by1, by2 = int(ys.min()), int(ys.max())
+
+    margin = 8
+    rx1, ry1 = max(0, bx1 - margin), max(0, by1 - margin)
+    rx2, ry2 = min(w, bx2 + margin + 1), min(h, by2 + margin + 1)
+
+    # Local ROI processing to prevent leakage across whole building
+    roi_env = envelope[ry1:ry2, rx1:rx2]
+    roi_ink = ink[ry1:ry2, rx1:rx2]
+    roi_seed = seed[ry1:ry2, rx1:rx2]
+
+    # Morphological close on ink to seal tiny 1px drafting gaps
+    sealed_ink = cv2.dilate(roi_ink, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)))
+    roi_paper = np.where((roi_env > 0) & (sealed_ink == 0), 255, 0).astype(np.uint8)
+
+    n, labels = cv2.connectedComponents(roi_paper)
+    best_roi = roi_seed
     best_overlap = 0
-    seed_bin = seed > 0
+    seed_bin = roi_seed > 0
+
     for i in range(1, n):
         comp = labels == i
         overlap = int(np.count_nonzero(comp & seed_bin))
-        if overlap > best_overlap:
+        comp_area = int(np.count_nonzero(comp))
+        if overlap > best_overlap and comp_area <= max_allowed:
             best_overlap = overlap
-            best = (comp.astype(np.uint8) * 255)
-    if best_overlap < 10:
+            best_roi = (comp.astype(np.uint8) * 255)
+
+    out = seed.copy()
+    if best_overlap > 10:
+        out[ry1:ry2, rx1:rx2] = cv2.bitwise_or(roi_seed, best_roi)
+
+    out_area = int(np.count_nonzero(out))
+    if out_area > max_allowed * 1.5:
         return _clip(seed, envelope)
-    merged = cv2.bitwise_or(seed, best)
-    # Do not jump over blocked ink into a huge wall when the seed is a window.
-    seed_area = int(np.count_nonzero(seed))
-    merged_area = int(np.count_nonzero(merged))
-    if seed_area > 0 and merged_area > seed_area * 8:
-        return _clip(seed, envelope)
-    return _clip(merged, envelope)
+    return _clip(out, envelope)
 
 
 def resolve_priority(masks: dict[str, np.ndarray], envelope: np.ndarray | None = None) -> dict[str, np.ndarray]:
@@ -64,15 +88,41 @@ def resolve_priority(masks: dict[str, np.ndarray], envelope: np.ndarray | None =
 def snap_regions(perceived: PerceiveResult, regions: list[Region]) -> dict[str, np.ndarray]:
     h, w = perceived.envelope.shape
     stacked: dict[str, np.ndarray] = {name: np.zeros((h, w), np.uint8) for name in CLASSES}
+
+    # Match regions to perceived geometric faces for pixel-perfect CAD alignment
+    used_face_ids = set()
     for region in regions:
         if region.label not in stacked:
             continue
-        snapped = region.mask
+
         if region.source in {"yolo", "florence", "sam"} and region.label in {"window", "vent"}:
-            snapped = _fill_to_ink(region.mask, perceived.envelope, perceived.ink)
+            # Check overlap with true CAD opening faces
+            matched_face = None
+            for face in perceived.faces:
+                if id(face) in used_face_ids:
+                    continue
+                overlap = int(np.count_nonzero((region.mask > 0) & (face.mask > 0)))
+                face_area = int(np.count_nonzero(face.mask > 0))
+                if face_area > 0 and overlap / face_area >= 0.25:
+                    matched_face = face
+                    used_face_ids.add(id(face))
+                    break
+
+            if matched_face is not None:
+                snapped = matched_face.mask
+            else:
+                snapped = _fill_to_ink(region.mask, perceived.envelope, perceived.ink, region.box)
+        elif region.label == "pipe":
+            snapped = _clip(region.mask, perceived.envelope)
         else:
             snapped = _clip(region.mask, perceived.envelope)
+
         stacked[region.label] = cv2.bitwise_or(stacked[region.label], snapped)
+
+    # Ensure all detected geometric faces are included if not yet claimed
+    for face in perceived.faces:
+        if face.label in stacked and int(np.count_nonzero(stacked[face.label] & face.mask)) == 0:
+            stacked[face.label] = cv2.bitwise_or(stacked[face.label], face.mask)
 
     # Subtract higher-priority classes from lower ones.
     ordered = sorted(CLASSES.values(), key=lambda c: c.priority, reverse=True)
@@ -83,16 +133,16 @@ def snap_regions(perceived: PerceiveResult, regions: list[Region]) -> dict[str, 
         mask = cv2.bitwise_and(mask, perceived.envelope)
         out[cls.name] = mask
         claimed = cv2.bitwise_or(claimed, mask)
+
+    # Fill remaining building body with geometric priors (wall L1, wall L2, roof, foundation)
     leftover = cv2.bitwise_and(perceived.envelope, cv2.bitwise_not(claimed))
     if int(np.count_nonzero(leftover)):
-        detector_labels = {r.label for r in regions if r.source == "yolo"}
-        fill_names = ["wall_l2", "wall_l1", "foundation"]
-        if "roof" not in detector_labels:
-            fill_names.insert(0, "roof")
+        fill_names = ["wall_l2", "wall_l1", "foundation", "roof"]
         for name in fill_names:
             prior = perceived.geometry.get(name)
             if prior is None:
                 continue
             fill = cv2.bitwise_and(leftover, prior)
             out[name] = cv2.bitwise_or(out[name], fill)
+
     return resolve_priority(out, perceived.envelope)
